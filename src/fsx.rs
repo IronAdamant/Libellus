@@ -197,6 +197,31 @@ pub fn clip(s: &str, max: usize) -> String {
     }
 }
 
+/// Join `segments` under `base`. `.`, `..`, empty segments, and any symlink
+/// along the way are refused. The grammar of a segment is the caller's job.
+pub fn join_child(base: &Path, segments: &[&str]) -> Result<PathBuf, String> {
+    if segments.is_empty() {
+        return Err("path is empty".into());
+    }
+    for s in segments {
+        if s.is_empty()
+            || *s == "."
+            || *s == ".."
+            || s.contains('\0')
+            || s.contains('/')
+            || s.contains('\\')
+        {
+            return Err(format!("path segment \"{}\" is not allowed", clip(s, 40)));
+        }
+    }
+    let mut p = base.to_path_buf();
+    for s in segments {
+        p.push(s);
+    }
+    refuse_symlinks(base, &p)?;
+    Ok(p)
+}
+
 /// Current UTC time as `YYYY-MM-DDTHH:MM:SSZ`.
 pub fn now_iso() -> String {
     let secs = std::time::SystemTime::now()
@@ -212,6 +237,11 @@ pub fn now_iso() -> String {
         (rem % 3600) / 60,
         rem % 60
     )
+}
+
+/// Current UTC date as `YYYY-MM-DD`.
+pub fn today() -> String {
+    now_iso()[..10].to_string()
 }
 
 fn civil_from_days(z: i64) -> (i64, i64, i64) {
@@ -264,6 +294,9 @@ mod tests {
     #[test]
     fn ids_and_paths_are_guarded() {
         let d = scratch("guard");
+        assert!(join_child(&d, &["a", "b"]).is_ok());
+        assert!(join_child(&d, &[".."]).is_err());
+        assert!(join_child(&d, &["a", "..", "b"]).is_err());
         assert!(join_id(&d, "a/b", 2).is_ok());
         assert!(join_id(&d, "a/b/c", 2).is_err());
         assert!(join_id(&d, "../x", 2).is_err());

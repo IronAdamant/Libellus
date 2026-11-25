@@ -4,6 +4,7 @@ use crate::fsx;
 use crate::json::Value;
 use crate::ledger::{self, Entry};
 use crate::note::{self, Note};
+use crate::promote;
 use crate::store::Store;
 use crate::tool::{Args, Kind, Param, Tool};
 
@@ -14,6 +15,14 @@ const AGENT: Param = Param {
     kind: Kind::Str,
     required: true,
     doc: "Your own agent name: lowercase letters, digits, '-' (main, sub-2). Notes are private to it.",
+    choices: &[],
+};
+
+const NOTE_ID: Param = Param {
+    name: "id",
+    kind: Kind::Str,
+    required: true,
+    doc: "Note id, one or two slug segments (retry/post-question).",
     choices: &[],
 };
 
@@ -35,6 +44,30 @@ pub static TOOLS: &[Tool] = &[
         run: note_add,
     },
     Tool {
+        name: "libellus_get",
+        group: "core",
+        description: "Read one of your notes by id, including its body. Missing or corrupt is an error.",
+        params: &[AGENT, NOTE_ID],
+        run: note_get,
+    },
+    Tool {
+        name: "libellus_resolve",
+        group: "core",
+        description: "Mark one of your notes resolved and append a one-line outcome. Refuses a note that is already resolved.",
+        params: &[
+            AGENT,
+            NOTE_ID,
+            Param {
+                name: "outcome",
+                kind: Kind::Str,
+                required: true,
+                doc: "One line, up to 200 characters, appended to the body.",
+                choices: &[],
+            },
+        ],
+        run: note_resolve,
+    },
+    Tool {
         name: "libellus_ls",
         group: "core",
         description: "List your own notes, oldest first, with optional filters. Set bodies to read the detail too.",
@@ -54,8 +87,32 @@ pub static TOOLS: &[Tool] = &[
         params: &[
             AGENT,
             Param { name: "max_items", kind: Kind::UInt, required: false, doc: "Most notes per section. Default 5.", choices: &[] },
+            Param {
+                name: "host",
+                kind: Kind::Str,
+                required: false,
+                doc: "CLI only. text (default) prints the brief. cursor prints {\"additional_context\": ...} for a Cursor sessionStart hook.",
+                choices: &["text", "cursor"],
+            },
         ],
         run: brief,
+    },
+    Tool {
+        name: "libellus_promote",
+        group: "core",
+        description: "Copy one of your notes into the Relatum store as a shared note, and record that id in promoted. An open question must be resolved first. Does not run Relatum, and does not create .swarmnotes/.",
+        params: &[
+            AGENT,
+            NOTE_ID,
+            Param {
+                name: "scope",
+                kind: Kind::Str,
+                required: true,
+                doc: "Relatum scope, such as net or _shared. The new id is the scope plus this note's id.",
+                choices: &[],
+            },
+        ],
+        run: promote_note,
     },
     Tool {
         name: "libellus_spend",
@@ -72,6 +129,23 @@ pub static TOOLS: &[Tool] = &[
             Param { name: "note", kind: Kind::Str, required: false, doc: "One line, up to 200 characters.", choices: &[] },
         ],
         run: spend,
+    },
+    Tool {
+        name: "libellus_ledger",
+        group: "ledger",
+        description: "Totals of tokens and cost, for one agent or every agent. Optional task and step filters. A damaged ledger is an error and is not repaired.",
+        params: &[
+            Param {
+                name: "agent",
+                kind: Kind::Str,
+                required: false,
+                doc: "Agent to sum. Omit to sum every agent in the store.",
+                choices: &[],
+            },
+            Param { name: "task", kind: Kind::Str, required: false, doc: "Only this task slug.", choices: &[] },
+            Param { name: "step", kind: Kind::Str, required: false, doc: "Only this step slug.", choices: &[] },
+        ],
+        run: ledger_report,
     },
 ];
 
@@ -157,6 +231,57 @@ fn unique_id(dir: &std::path::Path, summary: &str) -> Result<String, String> {
         }
     }
     Err("could not find a free id; pass id".into())
+}
+
+fn note_get(a: &Args) -> Result<Value, String> {
+    let store = Store::open()?;
+    let agent = a.str("agent").unwrap_or_default();
+    let id = a.str("id").unwrap_or_default();
+    Ok(note_full(&note::load_one(&store, agent, id)?))
+}
+
+fn note_resolve(a: &Args) -> Result<Value, String> {
+    let store = Store::open()?;
+    let agent = a.str("agent").unwrap_or_default();
+    let id = a.str("id").unwrap_or_default();
+    let outcome = a.str("outcome").unwrap_or_default();
+    note::validate_outcome(outcome)?;
+    let mut note = note::load_one(&store, agent, id)?;
+    if note.status == "resolved" {
+        return Err(format!("note \"{id}\" is already resolved"));
+    }
+    note.status = "resolved".to_string();
+    let body = note::append_outcome(&note.body, outcome);
+    note.body = body;
+    let path = note::note_path(&store, agent, id)?;
+    fsx::write_atomic(&path, note.render().as_bytes(), true)
+        .map_err(|e| format!("note \"{id}\" not updated: {e}"))?;
+    Ok(note_full(&note))
+}
+
+/// Every field of one note. The body is not cut: this is a single note, not a list.
+fn note_full(n: &Note) -> Value {
+    let mut p = vec![
+        ("id", Value::str(&n.id)),
+        ("kind", Value::str(&n.kind)),
+        ("status", Value::str(&n.status)),
+        ("summary", Value::str(&n.summary)),
+        ("agent", Value::str(&n.agent)),
+        ("created", Value::str(&n.created)),
+        (
+            "evidence",
+            Value::Array(n.evidence.iter().map(Value::str).collect()),
+        ),
+        (
+            "tags",
+            Value::Array(n.tags.iter().map(Value::str).collect()),
+        ),
+        ("body", Value::str(&n.body)),
+    ];
+    if let Some(pr) = &n.promoted {
+        p.push(("promoted", Value::str(pr)));
+    }
+    Value::obj(p)
 }
 
 fn note_value(n: &Note, body: bool) -> Value {
@@ -285,6 +410,14 @@ fn brief(a: &Args) -> Result<Value, String> {
     ]))
 }
 
+fn promote_note(a: &Args) -> Result<Value, String> {
+    promote::promote(
+        a.str("agent").unwrap_or_default(),
+        a.str("id").unwrap_or_default(),
+        a.str("scope").unwrap_or_default(),
+    )
+}
+
 fn spend(a: &Args) -> Result<Value, String> {
     let store = Store::open()?;
     let agent = a.str("agent").unwrap_or_default().to_string();
@@ -331,4 +464,77 @@ fn spend(a: &Args) -> Result<Value, String> {
         ("task_total", ledger::total(&mine)?.to_value()),
         ("agent_total", ledger::total(&all)?.to_value()),
     ]))
+}
+
+fn ledger_report(a: &Args) -> Result<Value, String> {
+    let store = Store::open()?;
+    let task = a.str("task");
+    let step = a.str("step");
+    if let Some(name) = task {
+        if !fsx::valid_slug(name) {
+            return Err(format!(
+                "invalid task \"{}\": use a slug",
+                fsx::clip(name, 40)
+            ));
+        }
+    }
+    if let Some(name) = step {
+        if !fsx::valid_slug(name) {
+            return Err(format!(
+                "invalid step \"{}\": use a slug",
+                fsx::clip(name, 40)
+            ));
+        }
+    }
+    let agents = match a.str("agent") {
+        Some(name) => {
+            store.agent_dir(name)?;
+            vec![name.to_string()]
+        }
+        None => store.agents()?,
+    };
+    let mut entries = Vec::new();
+    for name in &agents {
+        let mut rows = ledger::read(&store, name)?;
+        if let Some(task) = task {
+            rows.retain(|e| e.task == task);
+        }
+        if let Some(step) = step {
+            rows.retain(|e| e.step.as_deref() == Some(step));
+        }
+        entries.extend(rows);
+    }
+    let totals = ledger::total(&entries)?;
+    let mut pairs = match totals.to_value() {
+        Value::Object(fields) => fields,
+        _ => Vec::new(),
+    };
+    pairs.insert(
+        0,
+        (
+            "agents".to_string(),
+            Value::Array(agents.iter().map(Value::str).collect()),
+        ),
+    );
+    if task.is_none() {
+        pairs.push((
+            "by_task".to_string(),
+            totals_map(&ledger::by_task(&entries)?),
+        ));
+    }
+    if step.is_none() {
+        pairs.push((
+            "by_step".to_string(),
+            totals_map(&ledger::by_step(&entries)?),
+        ));
+    }
+    Ok(Value::Object(pairs))
+}
+
+fn totals_map(rows: &[(String, ledger::Totals)]) -> Value {
+    Value::Object(
+        rows.iter()
+            .map(|(k, t)| (k.clone(), t.to_value()))
+            .collect(),
+    )
 }

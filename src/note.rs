@@ -44,21 +44,83 @@ pub fn valid_pointer(p: &str) -> bool {
 }
 
 pub fn validate_summary(s: &str) -> Result<(), String> {
+    validate_line("summary", s, true)
+}
+
+/// A one-line outcome appended by `libellus_resolve`. Same limits as a summary.
+pub fn validate_outcome(s: &str) -> Result<(), String> {
+    validate_line("outcome", s, false)
+}
+
+fn validate_line(label: &str, s: &str, suggest_body: bool) -> Result<(), String> {
     if s.trim().is_empty() {
-        return Err("summary is empty".into());
+        return Err(format!("{label} is empty"));
     }
     if s.contains('\n') || s.contains('\r') {
-        return Err("summary must be one line".into());
+        return Err(format!("{label} must be one line"));
     }
     if s.chars().count() > MAX_SUMMARY {
+        let extra = if suggest_body {
+            "; put the detail in the body"
+        } else {
+            ""
+        };
         return Err(format!(
-            "summary is longer than {MAX_SUMMARY} characters; put the detail in the body"
+            "{label} is longer than {MAX_SUMMARY} characters{extra}"
         ));
     }
     if s != s.trim() {
-        return Err("summary has leading or trailing spaces".into());
+        return Err(format!("{label} has leading or trailing spaces"));
     }
     Ok(())
+}
+
+/// Append one outcome line. The previous body is kept, and a second call is
+/// the caller's job to refuse: this only builds the text.
+pub fn append_outcome(body: &str, outcome: &str) -> String {
+    let line = format!("Outcome: {outcome}");
+    if body.is_empty() {
+        line
+    } else {
+        format!("{body}\n\n{line}")
+    }
+}
+
+/// Path of one note. The id is checked; the file need not exist yet.
+pub fn note_path(store: &Store, agent: &str, id: &str) -> Result<std::path::PathBuf, String> {
+    Ok(fsx::join_id(&store.notes_dir(agent)?, id, 2)?.with_extension("md"))
+}
+
+/// One note. Missing, corrupt, a symlink, or a file whose `agent` field is
+/// not `agent` is an error. Never an empty success.
+pub fn load_one(store: &Store, agent: &str, id: &str) -> Result<Note, String> {
+    let path = note_path(store, agent, id)?;
+    let meta = match fs::symlink_metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("no note \"{id}\" for agent \"{agent}\""));
+        }
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    if meta.file_type().is_symlink() {
+        return Err(format!(
+            "{} is a symlink; refusing to follow it",
+            path.display()
+        ));
+    }
+    if !meta.is_file() {
+        return Err(format!("{} is not a note file", path.display()));
+    }
+    let text = fsx::read_strict(&path)?;
+    let note = Note::parse(id, &text)
+        .map_err(|e| format!("corrupt note {id} ({}): {e}", path.display()))?;
+    if note.agent != agent {
+        return Err(format!(
+            "note \"{id}\" belongs to agent \"{}\", not \"{agent}\"",
+            note.agent
+        ));
+    }
+    Ok(note)
 }
 
 impl Note {
@@ -307,5 +369,19 @@ mod tests {
         assert!(!valid_pointer("chisel:"));
         assert!(!valid_pointer("chisel:a b"));
         assert!(!valid_pointer("Chisel:a"));
+    }
+
+    #[test]
+    fn outcome_rules_and_append() {
+        assert!(validate_outcome("No, GET only.").is_ok());
+        assert!(validate_outcome("").is_err());
+        assert!(validate_outcome("a\nb").is_err());
+        assert!(validate_outcome(&"x".repeat(MAX_SUMMARY + 1)).is_err());
+        assert!(validate_outcome(&"é".repeat(MAX_SUMMARY)).is_ok());
+        assert_eq!(
+            append_outcome("Line one.", "No, GET only."),
+            "Line one.\n\nOutcome: No, GET only."
+        );
+        assert_eq!(append_outcome("", "Done."), "Outcome: Done.");
     }
 }

@@ -1,102 +1,138 @@
 # Libellus
 
+## What it is
+
+Libellus is a private notepad and a number ledger for one AI agent. The notes
+and the numbers live in plain files that agent owns. After its context is
+compacted, one command returns a short brief: open questions, recent
+decisions, dead ends, and what the run has cost.
+
+## Why it exists
+
+When an agent's context is squashed, it forgets the question it was still
+unsure about, the approach it already ruled out, the decision it made, and
+what the run has cost. That memory has to live outside the chat, in files the
+agent owns.
+
+Each agent has a private folder of short notes and a number list (the ledger).
+Notes point at proof (`tool:reference`) instead of copying it. Sharing with
+the swarm is a deliberate step into [Relatum](https://github.com/IronAdamant/Relatum),
+not the default.
+
+What it deliberately does not do:
+
+- It does not call a model. The agent reports tokens and cost. Libellus only
+  adds them up. Cost is a whole number of millionths of a US dollar.
+- It is not Relatum (shared swarm notes), Stele-Context (code memory),
+  Wikifier (per-file change notes), Trammel (plans), CoordinationHub (locks),
+  or Adsertio (verification).
+- "Private" means separate per agent, not secret. The same computer user can
+  read the files.
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**A private notepad and number ledger for each AI agent.**
+Libellus is one small Rust binary (standard library only, no Cargo crates)
+with a CLI and a stdio MCP server over the same files. No service, no account.
 
-An agent loses its working memory when its context is compacted: the question it
-was still unsure about, the approach it already ruled out, the decision it made
-an hour ago, what the run has cost so far. Libellus keeps those in plain files
-the agent owns, and hands back a short brief when the context is squashed.
+## Install
 
-Libellus is one small Rust binary (standard library only, no Cargo crates) with a
-CLI and a stdio MCP server over the same files. It never calls a model. No
-service, no account.
+Libellus is not published to crates.io. Build it from this repository (Rust
+1.83 or newer):
 
-> **Status: v0.1.0, a scaffold.** The foundations and four tools work and are
-> tested. The rest of the design is written down in [SPEC.md](SPEC.md) and not
-> built yet. See "What works today".
+```sh
+git clone https://github.com/IronAdamant/Libellus
+cd Libellus
+cargo build --release --locked
+```
 
-## What it holds
+That produces `target/release/libellus` and `target/release/libellus-mcp`
+(`libellus mcp` is the same server). `--version` prints the version.
+
+## Usage
+
+```sh
+cd your-project
+libellus init
+libellus note --agent main --kind question --summary "Does retry apply to POST?"
+libellus resolve --agent main --id does-retry-apply-to-post --outcome "No, GET only."
+libellus get --agent main --id does-retry-apply-to-post
+libellus spend --agent main --task retry --tokens_in 100 --tokens_out 20 --cost_micro_usd 1000
+libellus ledger --agent main
+libellus brief --agent main
+```
+
+The store is the nearest `.libellus/` walking up from the working directory,
+or `$LIBELLUS_DIR`.
 
 ```
 .libellus/
-  agents/main/notes/retry/post-question.md   <- a note, private to the agent "main"
-  agents/main/ledger.jsonl                   <- tokens and cost, one line per step
-  agents/sub-2/...                           <- each subagent has its own folder
+  agents/main/notes/does-retry-apply-to-post.md
+  agents/main/ledger.jsonl
+  agents/sub-2/...
 ```
 
-- **Notes** are short markdown files with a little frontmatter, in the same
-  family as [Relatum](https://github.com/IronAdamant/Relatum) notes. A note has a
-  `kind` (decision, dead-end, question, finding, context) and a `status` (open or
-  resolved). Questions start open.
-- **Evidence is a pointer, not a copy.** A note names where proof lives, as
-  `tool:reference` (`trammel:plan-3/step-2`, `chisel:tests/net.rs`,
-  `probatio:runs/7`). Nothing is pasted in.
-- **The ledger** records the tokens and cost an agent reports for each task and
-  step. Cost is a whole number of millionths of a US dollar, so sums are exact.
-  Libellus adds numbers up; it does not know any model's price.
-- **The brief** (`libellus_brief`) is what comes back after compaction: open
-  questions, recent decisions, dead ends, and running costs.
+A note has a `kind` (decision, dead-end, question, finding, context) and a
+`status` (open or resolved). Questions start open. Evidence is a pointer such
+as `trammel:plan-3/step-2`, not a copy of the proof. The ledger stores the
+tokens and cost the agent reports. The brief is the text to put back into
+context. The format is in [SPEC.md](SPEC.md).
 
-## What it is not
+`LIBELLUS_AGENT` fills in `--agent` when a command needs an agent and the flag
+is left out. `libellus ledger` does not use it: with no `--agent` it sums
+every agent in the store.
 
-| Tool | What it holds | Libellus instead |
-|---|---|---|
-| Relatum | Notes shared across a swarm, monitored by the parent | Private to one agent. Sharing is a deliberate promote into Relatum. |
-| Stele-Context | Code memory | Holds no code, only what the agent thinks about it. |
-| Wikifier | Per-file notes on why a file changed | One agent's working notes, not tied to a file. |
-| Trammel | Plans and constraints | Notes can point at a plan step; they do not hold the plan. |
-| CoordinationHub | Live coordination and locks | No locks, no live state. |
+## MCP tools
 
-"Private" means separate per agent and not shared by default. It is not secret:
-anything running as the same operating system user can read the files.
+Claude Code (`.mcp.json`) or Cursor (`.cursor/mcp.json`):
 
-## What works today
+```json
+{
+  "mcpServers": {
+    "libellus": {
+      "command": "libellus-mcp",
+      "args": []
+    }
+  }
+}
+```
 
-MCP tools (and the same as CLI commands without the `libellus_` prefix):
+Set `LIBELLUS_DIR` only when the host does not start the server inside the
+project. The same tools are CLI commands without the `libellus_` prefix.
 
 | Tool | Group | Does |
 |---|---|---|
 | `libellus_note` | core | Write a note. Never overwrites an existing one. |
-| `libellus_ls` | core | List your notes with filters, optionally with bodies. |
+| `libellus_get` | core | Read one note by id, including its body. |
+| `libellus_resolve` | core | Mark a note resolved and append a one-line outcome. |
+| `libellus_ls` | core | List your notes, optionally with bodies. |
 | `libellus_brief` | core | The compaction payload. |
+| `libellus_promote` | core | Write the note into Relatum and record that id. |
 | `libellus_spend` | ledger | Record tokens and cost for a step. |
+| `libellus_ledger` | ledger | Totals, optionally by task, step, or every agent. |
+
+`libellus check` reads every note and ledger and fails on any damage.
+`libellus hook --agent NAME [--host cursor|claude|generic]` prints a snippet
+that runs `libellus brief`. Paste it into the host's hook file. Run it at
+session start and after compaction.
+
+The generic snippet is the command itself. The claude snippet is a
+SessionStart hook, including the compact matcher, which runs after compaction.
+That command's plain text is added to the session. The cursor snippet is a
+sessionStart hook: the command prints `{"additional_context": "..."}` and
+Cursor adds that text when a chat starts. Cursor's preCompact hook cannot put
+text back into the model, so after compaction in Cursor, run the brief again
+and put the text into the session yourself.
 
 ```sh
-cargo build --release
-cd your-project
-libellus init
-libellus note --agent main --kind question --summary "Does retry apply to POST?" --evidence trammel:plan-3/step-2
-libellus spend --agent main --task retry --tokens_in 1200 --tokens_out 300 --cost_micro_usd 15000
-libellus brief --agent main
+libellus hook --agent main --host generic
 ```
 
-Not built yet: resolving a note, reading one note by id, the promote step into
-Relatum, the compaction hook wiring, ledger totals by step or agent, release
-binaries and npm packages. SPEC.md lists each with its intended shape.
+## Tool groups
 
-## Built to fail loudly
+`core` is always on. `ledger` (`libellus_spend`, `libellus_ledger`) can be
+switched off. The server rereads the choice on every request.
 
-These are the failure modes found across similar tools, designed out from the
-start and covered by tests in `tests/`:
-
-- Deeply nested JSON, invalid UTF-8, oversized lines and batches get a JSON-RPC
-  error. The server keeps running.
-- Unknown methods are errors. A failed tool call sets `isError`.
-- Unknown or misspelled arguments are errors, never ignored.
-- A damaged note or ledger line is an error naming the file. It is never read as
-  empty and never reset, and a damaged ledger is never appended to.
-- Ids and agent names are slugs. Paths that leave the store, and symlinks, are
-  refused.
-- Every write lands whole through a temp file that is cleaned up on failure.
-  A new note is created with a hard link, so it cannot overwrite another.
-- A mistake in the `agent-tools` line falls back to the core tools and says why.
-
-## Choosing tool groups
-
-Add a line to the `agent-tools` block in the project's AGENTS.md. The server
-rereads it on every request.
+Add one line to the `agent-tools` block in the project's AGENTS.md:
 
 ````markdown
 ```agent-tools
@@ -104,17 +140,46 @@ libellus: disable ledger
 ```
 ````
 
-`libellus: tools core, ledger` lists only what you want instead. See
+`libellus: tools core, ledger` lists what you want instead. See
 [AGENTS.snippet.md](AGENTS.snippet.md) for text to paste into a project.
+
+`LIBELLUS_TOOLS` and `LIBELLUS_DISABLE`, when set to a non-empty value,
+replace that line. Names are groups, comma-separated, and case is ignored.
+`core` cannot be disabled. A typo, or an attempt to disable `core`, falls
+back to the core tools only and says why in `initialize` and in `tools/list`.
+
+## Hardening
+
+These failure modes are covered by tests in `tests/`:
+
+- Deeply nested JSON (cap 64), invalid UTF-8, oversized lines and batches get
+  a JSON-RPC error. The server keeps running.
+- Unknown methods are errors. A failed tool call sets `isError`. A panicking
+  tool is caught and reported as an error.
+- Unknown or misspelled arguments are errors, never ignored.
+- A damaged note or ledger is an error naming the file. It is never read as
+  empty, never reset, and a damaged ledger is never appended to.
+- Ids and agent names are slugs. Paths that leave the store, and symlinks,
+  are refused. The same checks apply to a Relatum path on promote.
+- Writes land whole through a temp file that is removed on failure. A new
+  note is created with a hard link, so it cannot overwrite another. Resolve
+  and promote update an existing note only by replacing that file.
+- A second resolve is an error and does not append again. A second promote is
+  an error and does not write a second Relatum note.
+- A mistake in the `agent-tools` line, or in `LIBELLUS_TOOLS` /
+  `LIBELLUS_DISABLE`, falls back to the core tools and says why.
 
 ## Build and test
 
 ```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --release --locked
 ```
 
-Rust 1.83. `Cargo.toml` has no dependencies; `tests/zero_deps.rs` checks it.
+`Cargo.toml` has no dependencies. `tests/zero_deps.rs` checks that, and
+`Cargo.lock` holds one package.
 
 ## Licence
 

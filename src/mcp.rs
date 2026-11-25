@@ -241,20 +241,16 @@ fn call(server: &Server, params: Option<&Value>) -> Result<Value, (i64, String)>
     };
     let enabled = enabled(server);
     if !enabled.tools.iter().any(|t| t.name == name) {
-        return Ok(tool_result(Err(format!(
-            "tool {name} is switched off by the agent-tools block in AGENTS.md; change that line to use it"
-        ))));
+        return Ok(tool_result(Err(enabled.refusal(tool))));
     }
-    let args = params.get("arguments").unwrap_or(&Value::Null);
-    let outcome =
-        tool.validate(args).and_then(
-            |a| match catch_unwind(AssertUnwindSafe(|| (tool.run)(&a))) {
-                Ok(r) => r,
-                Err(_) => {
-                    Err("internal error: the tool panicked; nothing was reported as done".into())
-                }
-            },
-        );
+    let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+    let args = crate::tool::fill_agent_default(tool, args);
+    let outcome = tool.validate(&args).and_then(|a| {
+        match catch_unwind(AssertUnwindSafe(|| (tool.run)(&a))) {
+            Ok(r) => r,
+            Err(_) => Err("internal error: the tool panicked; nothing was reported as done".into()),
+        }
+    });
     Ok(tool_result(outcome))
 }
 

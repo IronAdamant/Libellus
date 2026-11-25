@@ -166,14 +166,27 @@ pub fn total(entries: &[Entry]) -> Result<Totals, String> {
 
 /// Totals grouped by task, sorted by task name.
 pub fn by_task(entries: &[Entry]) -> Result<Vec<(String, Totals)>, String> {
+    grouped(entries, |e| e.task.clone())
+}
+
+/// Totals grouped by step, sorted by step name. A missing step is `""`.
+pub fn by_step(entries: &[Entry]) -> Result<Vec<(String, Totals)>, String> {
+    grouped(entries, |e| e.step.clone().unwrap_or_default())
+}
+
+fn grouped(
+    entries: &[Entry],
+    key_of: impl Fn(&Entry) -> String,
+) -> Result<Vec<(String, Totals)>, String> {
     let mut out: Vec<(String, Totals)> = Vec::new();
     for e in entries {
-        match out.iter_mut().find(|(k, _)| *k == e.task) {
+        let key = key_of(e);
+        match out.iter_mut().find(|(k, _)| *k == key) {
             Some((_, t)) => t.add(e)?,
             None => {
                 let mut t = Totals::default();
                 t.add(e)?;
-                out.push((e.task.clone(), t));
+                out.push((key, t));
             }
         }
     }
@@ -211,6 +224,13 @@ mod tests {
                 .entries,
             2
         );
+        let mut stepped = e("retry", 4);
+        stepped.step = Some("plan".into());
+        let rows = by_step(&[stepped, e("retry", 1)]).unwrap();
+        assert_eq!(rows[0].0, "");
+        assert_eq!(rows[0].1.tokens_in, 1);
+        assert_eq!(rows[1].0, "plan");
+        assert_eq!(rows[1].1.tokens_in, 4);
     }
 
     #[test]

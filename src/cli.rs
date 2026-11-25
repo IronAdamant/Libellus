@@ -1,9 +1,10 @@
 //! The command line: `libellus <command> --flag value ...`.
 //!
 //! Commands are the MCP tools without the `libellus_` prefix (note, ls, brief,
-//! spend), plus init, check, mcp. Flags come from the same parameter table as
-//! the MCP schema. An unknown flag, a flag with no value, or a bad number is
-//! an error; nothing is guessed.
+//! spend), plus init, check, hook, mcp. Flags come from the same parameter
+//! table as the MCP schema. An unknown flag, a flag with no value, or a bad
+//! number is an error; nothing is guessed. `LIBELLUS_AGENT` fills `--agent`
+//! when the command requires an agent and the flag is omitted.
 
 use crate::json::Value;
 use crate::tool::{Kind, Tool};
@@ -15,13 +16,22 @@ USAGE
   libellus init                       create .libellus/ in this folder
   libellus note --agent A --kind K --summary S [--body B] [--id I] [--status open|resolved]
                 [--evidence tool:ref]... [--tags T]...
+  libellus get --agent A --id I
+  libellus resolve --agent A --id I --outcome TEXT
   libellus ls --agent A [--kind K] [--status S] [--limit N] [--bodies]
-  libellus brief --agent A [--max_items N]       print the compaction brief as text
+  libellus brief --agent A [--max_items N] [--host text|cursor]
+                                              print the compaction brief as text
+  libellus promote --agent A --id I --scope SCOPE
   libellus spend --agent A --task T [--step S] [--model M] [--tokens_in N] [--tokens_out N]
                  [--cost_micro_usd N] [--note TEXT]
+  libellus ledger [--agent A] [--task T] [--step S]
+  libellus hook --agent NAME [--host cursor|claude|generic]
   libellus check                      read every note and ledger; fail on any damage
   libellus mcp                        start the stdio MCP server (same as libellus-mcp)
   libellus --version
+
+LIBELLUS_AGENT supplies --agent when a command requires one and the flag is omitted.
+libellus ledger does not use it: with no --agent it sums every agent.
 
 Output is JSON; the exit code is 1 on any error, 2 on a usage error.";
 
@@ -48,6 +58,16 @@ pub fn run(args: &[String], as_mcp: bool) -> i32 {
                 .map(|s| Value::obj(vec![("store", Value::String(s.dir.display().to_string()))])),
         ),
         "check" => finish(check()),
+        "hook" => match crate::hook::from_argv(&args[1..]) {
+            Ok(text) => {
+                print!("{text}");
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                2
+            }
+        },
         other => match tools::TOOLS
             .iter()
             .find(|t| t.name.strip_prefix("libellus_") == Some(other))
@@ -62,16 +82,23 @@ pub fn run(args: &[String], as_mcp: bool) -> i32 {
                     2
                 }
                 Ok(v) => {
+                    let v = crate::tool::fill_agent_default(tool, v);
                     let out = tool.validate(&v).and_then(|a| (tool.run)(&a));
                     if other == "brief" {
-                        if let Ok(Value::Object(_)) = &out {
-                            let text = out
-                                .as_ref()
-                                .ok()
-                                .and_then(|o| o.get("text"))
-                                .and_then(Value::as_str)
-                                .unwrap_or("");
-                            print!("{text}");
+                        if let Ok(value) = &out {
+                            let text = value.get("text").and_then(Value::as_str).unwrap_or("");
+                            if v.get("host").and_then(Value::as_str) == Some("cursor") {
+                                println!(
+                                    "{}",
+                                    Value::obj(vec![(
+                                        "additional_context",
+                                        Value::String(text.to_string()),
+                                    )])
+                                    .to_json()
+                                );
+                            } else {
+                                print!("{text}");
+                            }
                             return 0;
                         }
                     }
