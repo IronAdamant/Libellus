@@ -1,12 +1,14 @@
 //! Libellus: a private notepad and number ledger for each AI agent.
 //! Standard library only. See basis.md for the design and SPEC.md for the format.
 
+pub mod check;
 pub mod cli;
 pub mod fsx;
 pub mod groups;
 pub mod hook;
 pub mod json;
 pub mod ledger;
+pub mod ledger_cmd;
 pub mod mcp;
 pub mod note;
 pub mod promote;

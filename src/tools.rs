@@ -2,7 +2,7 @@
 
 use crate::fsx;
 use crate::json::Value;
-use crate::ledger::{self, Entry};
+use crate::ledger;
 use crate::note::{self, Note};
 use crate::promote;
 use crate::store::Store;
@@ -75,8 +75,9 @@ pub static TOOLS: &[Tool] = &[
             AGENT,
             Param { name: "kind", kind: Kind::Str, required: false, doc: "Only this kind.", choices: note::KINDS },
             Param { name: "status", kind: Kind::Str, required: false, doc: "Only this status.", choices: note::STATUSES },
-            Param { name: "limit", kind: Kind::UInt, required: false, doc: "Most notes to return, newest kept. Default 50. 0 returns none.", choices: &[] },
-            Param { name: "offset", kind: Kind::UInt, required: false, doc: "Skip this many of the newest notes before applying limit. Default 0, which is the same page as before.", choices: &[] },
+            Param { name: "limit", kind: Kind::UInt, required: false, doc: "Most notes to return, newest kept. Default 50. Minimum 1.", choices: &[] },
+            Param { name: "offset", kind: Kind::UInt, required: false, doc: "Skip this many of the newest notes before applying limit. Default 0. Prefer before_id: a note written between pages can show up twice with offset.", choices: &[] },
+            Param { name: "before_id", kind: Kind::Str, required: false, doc: "Stable cursor: only notes older than this id (by created, then id). Use next_before_id from the previous page.", choices: &[] },
             Param { name: "bodies", kind: Kind::Bool, required: false, doc: "Include each body (cut at 4000 characters).", choices: &[] },
         ],
         run: note_ls,
@@ -88,13 +89,6 @@ pub static TOOLS: &[Tool] = &[
         params: &[
             AGENT,
             Param { name: "max_items", kind: Kind::UInt, required: false, doc: "Most notes per section. Default 5.", choices: &[] },
-            Param {
-                name: "host",
-                kind: Kind::Str,
-                required: false,
-                doc: "CLI only. text (default) prints the brief. cursor prints {\"additional_context\": ...} for a Cursor sessionStart hook.",
-                choices: &["text", "cursor"],
-            },
         ],
         run: brief,
     },
@@ -147,6 +141,13 @@ pub static TOOLS: &[Tool] = &[
             Param { name: "step", kind: Kind::Str, required: false, doc: "Only this step slug.", choices: &[] },
         ],
         run: ledger_report,
+    },
+    Tool {
+        name: "libellus_check",
+        group: "core",
+        description: "Read every note and ledger. Fails if a file is damaged, a note is over the size cap, a total overflows, or a note's agent field does not match its folder.",
+        params: &[],
+        run: check_tool,
     },
 ];
 
@@ -252,6 +253,12 @@ fn note_resolve(a: &Args) -> Result<Value, String> {
     let id = a.str("id").unwrap_or_default();
     let outcome = a.str("outcome").unwrap_or_default();
     note::validate_outcome(outcome)?;
+    let path = note::note_path(&store, agent, id)?;
+    let _lock = if path.parent().is_some_and(|parent| parent.is_dir()) {
+        Some(fsx::Lock::acquire(&path)?)
+    } else {
+        None
+    };
     let mut note = note::load_one(&store, agent, id)?;
     if note.status == "resolved" {
         return Err(format!(
@@ -325,43 +332,84 @@ fn note_value(n: &Note, body: bool) -> Value {
 
 fn note_ls(a: &Args) -> Result<Value, String> {
     let store = Store::open()?;
-    let mut notes = note::load_all(&store, a.str("agent").unwrap_or_default())?;
+    let loaded = note::load_all(&store, a.str("agent").unwrap_or_default())?;
+    let mut notes = loaded.notes;
     notes.retain(|n| {
         a.str("kind").is_none_or(|k| n.kind == k) && a.str("status").is_none_or(|s| n.status == s)
     });
     let total = notes.len();
     let limit = a.uint("limit").unwrap_or(50) as usize;
     let offset = a.uint("offset").unwrap_or(0) as usize;
+    if let Some(id) = a.str("before_id") {
+        let cursor = notes.iter().find(|n| n.id == id).cloned().ok_or_else(|| {
+            format!("before_id \"{id}\" is not in this list. Call libellus_ls without before_id.")
+        })?;
+        notes.retain(|n| {
+            (n.created.as_str(), n.id.as_str()) < (cursor.created.as_str(), cursor.id.as_str())
+        });
+    }
     // Newest notes are at the end. offset skips that many, then limit keeps
-    // the newest of what remains. offset 0 is the previous behaviour.
+    // the newest of what remains. offset 0 with no before_id is the 1.0.0 page.
+    // before_id is the stable cursor: new notes written later are newer, so
+    // they do not appear again on the next older page.
     if offset >= notes.len() {
         notes.clear();
     } else if offset > 0 {
         notes.truncate(notes.len() - offset);
     }
-    if notes.len() > limit {
+    let truncated = notes.len() > limit;
+    if truncated {
         notes.drain(..notes.len() - limit);
     }
+    let returned = notes.len() as u64;
+    let next_before = if truncated {
+        notes
+            .first()
+            .map(|n| Value::str(&n.id))
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    let next_offset = if truncated {
+        Value::uint(offset as u64 + returned)
+    } else {
+        Value::Null
+    };
     let bodies = a.bool("bodies").unwrap_or(false);
-    Ok(Value::obj(vec![
+    let mut pairs = vec![
         (
-            "notes",
+            "notes".to_string(),
             Value::Array(notes.iter().map(|n| note_value(n, bodies)).collect()),
         ),
-        ("total", Value::uint(total as u64)),
-        ("offset", Value::uint(offset as u64)),
-        ("returned", Value::uint(notes.len() as u64)),
-    ]))
+        ("total".to_string(), Value::uint(total as u64)),
+        ("offset".to_string(), Value::uint(offset as u64)),
+        ("returned".to_string(), Value::uint(returned)),
+        ("truncated".to_string(), Value::Bool(truncated)),
+        ("next_offset".to_string(), next_offset),
+        ("next_before_id".to_string(), next_before),
+    ];
+    if !loaded.warnings.is_empty() {
+        pairs.push((
+            "warnings".to_string(),
+            Value::Array(loaded.warnings.iter().map(Value::str).collect()),
+        ));
+    }
+    Ok(Value::Object(pairs))
 }
 
 fn brief(a: &Args) -> Result<Value, String> {
     let store = Store::open()?;
     let agent = a.str("agent").unwrap_or_default();
     let max = a.uint("max_items").unwrap_or(5) as usize;
-    let notes = note::load_all(&store, agent)?;
-    let entries = ledger::read(&store, agent)?;
-    let totals = ledger::total(&entries)?;
+    let loaded = note::load_all(&store, agent)?;
+    let notes = loaded.notes;
+    let (entries, totals, overflow_line) = ledger::read_summed(&store, agent)?;
     let tasks = ledger::by_task(&entries)?;
+    let ledger_error = overflow_line.map(|line| {
+        format!(
+            "ledger totals overflowed a 64-bit number at line {line}. Totals above stop before that line."
+        )
+    });
     let latest = |kind: &str, status: Option<&str>| -> Vec<&Note> {
         let mut v: Vec<&Note> = notes
             .iter()
@@ -403,17 +451,36 @@ fn brief(a: &Args) -> Result<Value, String> {
             t.tokens_in, t.tokens_out, t.cost_micro_usd
         ));
     }
-    text.push_str(
-        "\nNext: resolve an open question with libellus_resolve, record cost with libellus_spend, share a note with libellus_promote.\n",
-    );
+    let mut next_bits = Vec::new();
+    if !open.is_empty() {
+        next_bits.push("resolve an open question with libellus_resolve");
+    }
+    let unshared = decisions
+        .iter()
+        .chain(dead_ends.iter())
+        .any(|n| n.promoted.is_none());
+    if unshared {
+        next_bits.push("share a note with libellus_promote");
+    }
+    if !next_bits.is_empty() {
+        text.push_str("\nNext: ");
+        text.push_str(&next_bits.join("; "));
+        text.push_str(".\n");
+    }
+    for warning in &loaded.warnings {
+        text.push_str(&format!("\nWarning: {warning}\n"));
+    }
+    if let Some(err) = &ledger_error {
+        text.push_str(&format!("\nLedger: {err}\n"));
+    }
     let short = |v: &[&Note]| Value::Array(v.iter().map(|n| note_value(n, false)).collect());
-    Ok(Value::obj(vec![
-        ("agent", Value::str(agent)),
-        ("open_questions", short(&open)),
-        ("recent_decisions", short(&decisions)),
-        ("dead_ends", short(&dead_ends)),
+    let mut pairs = vec![
+        ("agent".to_string(), Value::str(agent)),
+        ("open_questions".to_string(), short(&open)),
+        ("recent_decisions".to_string(), short(&decisions)),
+        ("dead_ends".to_string(), short(&dead_ends)),
         (
-            "costs",
+            "costs".to_string(),
             Value::obj(vec![
                 ("total", totals.to_value()),
                 (
@@ -427,8 +494,18 @@ fn brief(a: &Args) -> Result<Value, String> {
                 ),
             ]),
         ),
-        ("text", Value::String(text)),
-    ]))
+        ("text".to_string(), Value::String(text)),
+    ];
+    if let Some(err) = ledger_error {
+        pairs.push(("ledger_error".to_string(), Value::String(err)));
+    }
+    if !loaded.warnings.is_empty() {
+        pairs.push((
+            "warnings".to_string(),
+            Value::Array(loaded.warnings.iter().map(Value::str).collect()),
+        ));
+    }
+    Ok(Value::Object(pairs))
 }
 
 fn promote_note(a: &Args) -> Result<Value, String> {
@@ -440,121 +517,13 @@ fn promote_note(a: &Args) -> Result<Value, String> {
 }
 
 fn spend(a: &Args) -> Result<Value, String> {
-    let store = Store::open()?;
-    let agent = a.str("agent").unwrap_or_default().to_string();
-    let task = a.str("task").unwrap_or_default();
-    if !fsx::valid_slug(task) {
-        return Err(format!(
-            "invalid task \"{}\": use a slug",
-            fsx::clip(task, 40)
-        ));
-    }
-    let step = a.str("step");
-    if let Some(s) = step {
-        if !fsx::valid_slug(s) {
-            return Err(format!("invalid step \"{}\": use a slug", fsx::clip(s, 40)));
-        }
-    }
-    if let Some(n) = a.str("note") {
-        note::validate_summary(n).map_err(|e| format!("note: {e}"))?;
-    }
-    let (ti, to, c) = (
-        a.uint("tokens_in"),
-        a.uint("tokens_out"),
-        a.uint("cost_micro_usd"),
-    );
-    if ti.is_none() && to.is_none() && c.is_none() {
-        return Err("give at least one of tokens_in, tokens_out, cost_micro_usd".into());
-    }
-    let entry = Entry {
-        ts: fsx::now_iso(),
-        agent: agent.clone(),
-        task: task.to_string(),
-        step: step.map(String::from),
-        model: a.str("model").map(String::from),
-        tokens_in: ti.unwrap_or(0),
-        tokens_out: to.unwrap_or(0),
-        cost_micro_usd: c.unwrap_or(0),
-        note: a.str("note").map(String::from),
-    };
-    let all = ledger::append(&store, &entry)?;
-    let mine: Vec<Entry> = all.iter().filter(|e| e.task == task).cloned().collect();
-    Ok(Value::obj(vec![
-        ("recorded", Value::Bool(true)),
-        ("task_total", ledger::total(&mine)?.to_value()),
-        ("agent_total", ledger::total(&all)?.to_value()),
-    ]))
+    crate::ledger_cmd::spend(a)
 }
 
 fn ledger_report(a: &Args) -> Result<Value, String> {
-    let store = Store::open()?;
-    let task = a.str("task");
-    let step = a.str("step");
-    if let Some(name) = task {
-        if !fsx::valid_slug(name) {
-            return Err(format!(
-                "invalid task \"{}\": use a slug",
-                fsx::clip(name, 40)
-            ));
-        }
-    }
-    if let Some(name) = step {
-        if !fsx::valid_slug(name) {
-            return Err(format!(
-                "invalid step \"{}\": use a slug",
-                fsx::clip(name, 40)
-            ));
-        }
-    }
-    let agents = match a.str("agent") {
-        Some(name) => {
-            store.agent_dir(name)?;
-            vec![name.to_string()]
-        }
-        None => store.agents()?,
-    };
-    let mut entries = Vec::new();
-    for name in &agents {
-        let mut rows = ledger::read(&store, name)?;
-        if let Some(task) = task {
-            rows.retain(|e| e.task == task);
-        }
-        if let Some(step) = step {
-            rows.retain(|e| e.step.as_deref() == Some(step));
-        }
-        entries.extend(rows);
-    }
-    let totals = ledger::total(&entries)?;
-    let mut pairs = match totals.to_value() {
-        Value::Object(fields) => fields,
-        _ => Vec::new(),
-    };
-    pairs.insert(
-        0,
-        (
-            "agents".to_string(),
-            Value::Array(agents.iter().map(Value::str).collect()),
-        ),
-    );
-    if task.is_none() {
-        pairs.push((
-            "by_task".to_string(),
-            totals_map(&ledger::by_task(&entries)?),
-        ));
-    }
-    if step.is_none() {
-        pairs.push((
-            "by_step".to_string(),
-            totals_map(&ledger::by_step(&entries)?),
-        ));
-    }
-    Ok(Value::Object(pairs))
+    crate::ledger_cmd::report(a)
 }
 
-fn totals_map(rows: &[(String, ledger::Totals)]) -> Value {
-    Value::Object(
-        rows.iter()
-            .map(|(k, t)| (k.clone(), t.to_value()))
-            .collect(),
-    )
+fn check_tool(_a: &Args) -> Result<Value, String> {
+    crate::check::run()
 }

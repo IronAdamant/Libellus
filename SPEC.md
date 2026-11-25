@@ -52,9 +52,12 @@ Frontmatter is a flat subset of YAML (`key: value`, lists written `[a, b]`).
 | `promoted` | no | Relatum note id written by `libellus_promote` |
 
 An unknown key, a duplicate key, a bad pointer, a bad tag, a missing field or an
-unclosed frontmatter is an error naming the file. Creating an id that exists
-fails. `libellus_get` returns the whole body. `libellus_ls` cuts a body at
-4000 characters and sets `truncated`.
+unclosed frontmatter is an error naming the file. A note file over 1 MiB is an
+error naming the file. Creating an id that exists fails. `libellus_get`
+returns the whole body of a note under that cap. `libellus_ls` cuts a body at
+4000 characters and sets `truncated` on that note. A note whose `agent` field
+does not match the folder is skipped by `ls` and `brief` with a warning, and
+`check` reports it. `get` still refuses it.
 
 `libellus_resolve` sets `status` to `resolved` and appends one line to the
 body, keeping the old body:
@@ -84,9 +87,12 @@ One JSON object per line, appended, never rewritten:
 
 `step`, `model` and `note` are optional. The three numbers are whole numbers
 (unsigned, up to 64 bits); `cost_micro_usd` is millionths of a US dollar. Sums use
-checked arithmetic and fail on overflow. A line that is damaged, has an unknown
+checked arithmetic. A spend checks the new total before it appends, and does
+not append when the total would overflow. A line that is damaged, has an unknown
 field, or a file that ends in a partial line fails every read and every append.
-A damaged ledger is not repaired.
+A damaged ledger is not repaired. A ledger that is intact but whose running
+total overflows is reported by `ledger` and `brief` as `ledger_error` with the
+line number; totals stop before that line. `check` fails on that ledger.
 
 `libellus_ledger` returns `agents`, `entries`, `tokens_in`, `tokens_out` and
 `cost_micro_usd`. With no `task`, it also returns `by_task`. With no `step`,
@@ -141,16 +147,25 @@ types, missing required arguments and values outside an `enum` are errors with
 - `libellus_get` `{agent, id}` returns the note, including `body`, `evidence`
   and `tags`. Missing, corrupt, a symlink, or a mismatched `agent` is an error.
 - `libellus_resolve` `{agent, id, outcome}` returns the updated note.
-- `libellus_ls` `{agent, kind?, status?, limit?, offset?, bodies?}` returns
-  `{notes, total, offset, returned}`. Notes are oldest first within the page.
-  `limit` (default 50) keeps the newest page. `offset` (default 0) skips that
-  many newest notes first. `offset` 0 is the 1.0.0 page. `total` is the full
-  count, not the page size.
-- `libellus_brief` `{agent, max_items?, host?}` returns `open_questions`,
+- `libellus_ls` `{agent, kind?, status?, limit?, offset?, before_id?, bodies?}`
+  returns `{notes, total, offset, returned, truncated, next_offset, next_before_id}`.
+  Notes are oldest first within the page. `limit` (default 50, minimum 1)
+  keeps the newest page. `offset` 0 is the 1.0.0 page. `before_id` is the
+  stable cursor: only notes older than that id, so a note written between
+  pages is not listed twice. `truncated` is true when another page remains.
+  `next_offset` and `next_before_id` are null when it does not. Prefer
+  `next_before_id` for the next call. `total` is the full count.
+- `libellus_brief` `{agent, max_items?}` returns `open_questions`,
   `recent_decisions`, `dead_ends`, `costs` and `text`. The CLI prints `text`.
-  `host: cursor` makes the CLI print `{"additional_context": "<text>"}` instead.
-  The text keeps the 1.0.0 headings and cost lines, and ends with one `Next:`
-  line naming resolve, spend, and promote.
+  `--host cursor` is a CLI flag only (it is not an MCP argument) and prints
+  `{"additional_context": "<text>"}`. The text keeps the 1.0.0 headings and
+  cost lines. A `Next:` line is added only when a question is still open or a
+  decision or dead end has not been promoted. `text` is the short form (one
+  line per item). The arrays are the same facts for a caller that parses
+  fields. Both stay so a 1.0.0 caller keeps working.
+- `libellus_check` `{}` reads every note and ledger. It fails when a file is
+  damaged, a note is over 1 MiB, a ledger total overflows, or a note's `agent`
+  field does not match its folder.
 - `libellus_promote` `{agent, id, scope}` returns `{id, promoted, relatum_kind, path}`.
 - `libellus_spend` `{agent, task, step?, model?, tokens_in?, tokens_out?,
   cost_micro_usd?, note?}` (at least one number) returns the task and agent

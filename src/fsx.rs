@@ -222,6 +222,76 @@ pub fn join_child(base: &Path, segments: &[&str]) -> Result<PathBuf, String> {
     Ok(p)
 }
 
+/// Exclusive lock file beside `subject` (`.name.lock`), created with
+/// `create_new`. A lock older than 30 seconds is stale and removed. Drop
+/// deletes the file.
+pub struct Lock {
+    path: PathBuf,
+}
+
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+const LOCK_STALE: std::time::Duration = std::time::Duration::from_secs(30);
+
+impl Lock {
+    pub fn acquire(subject: &Path) -> Result<Lock, String> {
+        let path = lock_path(subject)?;
+        let start = std::time::Instant::now();
+        loop {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    let _ = writeln!(file, "pid {}", std::process::id());
+                    return Ok(Lock { path });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if lock_is_stale(&path) {
+                        let _ = fs::remove_file(&path);
+                        continue;
+                    }
+                    if start.elapsed() >= LOCK_WAIT {
+                        return Err(format!(
+                            "{} is locked by another libellus process. Retry shortly. A lock older than 30 seconds is removed as stale.",
+                            path.display()
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => return Err(format!("cannot lock {}: {e}", path.display())),
+            }
+        }
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn lock_path(subject: &Path) -> Result<PathBuf, String> {
+    let name = subject
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("{} has no file name to lock", subject.display()))?;
+    let parent = subject
+        .parent()
+        .ok_or_else(|| format!("{} has no parent folder", subject.display()))?;
+    Ok(parent.join(format!(".{name}.lock")))
+}
+
+fn lock_is_stale(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return true;
+    };
+    meta.modified()
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age > LOCK_STALE)
+}
+
 /// Current UTC time as `YYYY-MM-DDTHH:MM:SSZ`.
 pub fn now_iso() -> String {
     let secs = std::time::SystemTime::now()

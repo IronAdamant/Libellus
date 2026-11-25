@@ -74,7 +74,9 @@ jobs:
              "target/${TARGET}/release/libellus-mcp${ext}" \
              "dist/${name}/"
           if [ "${ARCHIVE}" = "zip" ]; then
-            powershell.exe -NoProfile -Command "Compress-Archive -Path 'dist/${name}' -DestinationPath 'release-asset/${name}.zip'"
+            # Windows tar.exe is bsdtar. Entry names use forward slashes.
+            # Compress-Archive writes backslashes, which breaks unzip on Unix.
+            (cd dist && tar.exe -a -cf "../release-asset/${name}.zip" "${name}")
           else
             tar -C dist -czf "release-asset/${name}.tar.gz" "${name}"
           fi

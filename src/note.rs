@@ -12,6 +12,13 @@ use std::path::Path;
 pub const KINDS: &[&str] = &["decision", "dead-end", "question", "finding", "context"];
 pub const STATUSES: &[&str] = &["open", "resolved"];
 pub const MAX_SUMMARY: usize = 200;
+/// Largest note file we will read. A short note is far smaller than this.
+pub const MAX_NOTE_BYTES: u64 = 1_048_576;
+
+pub struct Loaded {
+    pub notes: Vec<Note>,
+    pub warnings: Vec<String>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Note {
@@ -91,10 +98,11 @@ pub fn note_path(store: &Store, agent: &str, id: &str) -> Result<std::path::Path
     Ok(fsx::join_id(&store.notes_dir(agent)?, id, 2)?.with_extension("md"))
 }
 
-/// One note. Missing, corrupt, a symlink, or a file whose `agent` field is
-/// not `agent` is an error. Never an empty success.
+/// One note. Missing, corrupt, a symlink, an oversized file, or a file whose
+/// `agent` field is not `agent` is an error. Never an empty success.
 pub fn load_one(store: &Store, agent: &str, id: &str) -> Result<Note, String> {
     let path = note_path(store, agent, id)?;
+    reject_huge_note(&path)?;
     let meta = match fs::symlink_metadata(&path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -257,8 +265,10 @@ impl Note {
     }
 }
 
-/// Every note of an agent, oldest first. A damaged note fails the whole read.
-pub fn load_all(store: &Store, agent: &str) -> Result<Vec<Note>, String> {
+/// Every note of an agent, oldest first. A damaged or oversized note fails
+/// the whole read. A note whose `agent` field names someone else is skipped
+/// and listed in `warnings`.
+pub fn load_all(store: &Store, agent: &str) -> Result<Loaded, String> {
     let dir = store.notes_dir(agent)?;
     let mut ids = Vec::new();
     collect(&dir, &dir, &mut ids)?;
@@ -268,10 +278,34 @@ pub fn load_all(store: &Store, agent: &str) -> Result<Vec<Note>, String> {
         read_notes_parallel(&ids)?
     };
     notes.sort_by(|a, b| a.created.cmp(&b.created).then(a.id.cmp(&b.id)));
-    Ok(notes)
+    let mut warnings = Vec::new();
+    notes.retain(|note| {
+        if note.agent == agent {
+            true
+        } else {
+            warnings.push(format!(
+                "skipped note {}: agent field is {}, not {agent}",
+                note.id, note.agent
+            ));
+            false
+        }
+    });
+    Ok(Loaded { notes, warnings })
+}
+
+fn reject_huge_note(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.len() > MAX_NOTE_BYTES => Err(format!(
+            "note file {} is {} bytes, over the {MAX_NOTE_BYTES} byte cap",
+            path.display(),
+            meta.len()
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn read_one(id: &str, path: &Path) -> Result<Note, String> {
+    reject_huge_note(path)?;
     let text = fsx::read_strict(path)?;
     Note::parse(id, &text).map_err(|e| format!("corrupt note {id} ({}): {e}", path.display()))
 }

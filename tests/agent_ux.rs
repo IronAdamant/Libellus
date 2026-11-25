@@ -174,10 +174,37 @@ fn errors_name_the_next_call_and_the_brief_ends_with_next() {
     let brief = cli(&dir, &["brief", "--agent", "main"]);
     let text = String::from_utf8(brief.stdout).unwrap();
     assert!(text.starts_with("# Libellus brief for main\n"), "{text}");
-    assert!(text.contains("## Open questions"));
-    assert!(text.trim_end().ends_with(
-        "Next: resolve an open question with libellus_resolve, record cost with libellus_spend, share a note with libellus_promote."
-    ), "{text}");
+    assert!(text.contains("## Open questions (0)"));
+    assert!(
+        !text.contains("Next:"),
+        "nothing to resolve or share: {text}"
+    );
+    let ask = cli(
+        &dir,
+        &[
+            "note",
+            "--agent",
+            "main",
+            "--kind",
+            "question",
+            "--id",
+            "q2",
+            "--summary",
+            "Another?",
+        ],
+    );
+    assert!(
+        ask.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ask.stderr)
+    );
+    let brief = cli(&dir, &["brief", "--agent", "main"]);
+    let text = String::from_utf8(brief.stdout).unwrap();
+    assert!(
+        text.contains("Next: resolve an open question with libellus_resolve."),
+        "{text}"
+    );
+    assert!(!text.contains("libellus_spend"), "{text}");
 }
 
 #[test]
@@ -185,6 +212,6 @@ fn unknown_ls_field_is_still_an_error() {
     let dir = project("ux-unknown");
     init(&dir);
     let out = cli(&dir, &["ls", "--agent", "main", "--colour", "red"]);
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown argument"));
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown flag"));
 }

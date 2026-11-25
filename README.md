@@ -108,8 +108,9 @@ project. The same tools are CLI commands without the `libellus_` prefix.
 | `libellus_note` | core | Write a note. Never overwrites an existing one. |
 | `libellus_get` | core | Read one note by id, including its body. |
 | `libellus_resolve` | core | Mark a note resolved and append a one-line outcome. |
-| `libellus_ls` | core | List your notes. `offset` turns the page. `total` is the full count. |
-| `libellus_brief` | core | The compaction payload. The text ends with a `Next:` line. |
+| `libellus_ls` | core | List your notes. `before_id` is the stable page cursor. `limit` is at least 1. |
+| `libellus_brief` | core | The compaction payload. `Next:` is added only when there is something to do. |
+| `libellus_check` | core | Read every note and ledger. Fails on damage, overflow, or a mismatched agent. |
 | `libellus_promote` | core | Write the note into Relatum and record that id. |
 | `libellus_spend` | ledger | Record tokens and cost for a step. |
 | `libellus_ledger` | ledger | Totals, optionally by task, step, or every agent. |

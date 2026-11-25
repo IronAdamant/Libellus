@@ -44,9 +44,12 @@ cargo build --release --locked
 - `src/tool.rs` tool table types and argument validation. `src/tools.rs` the tools.
 - `src/mcp.rs` the server. `src/groups.rs` the `agent-tools` block and
   `LIBELLUS_TOOLS` / `LIBELLUS_DISABLE`.
-- `src/note.rs` notes. `src/ledger.rs` the ledger. `src/store.rs` store lookup.
+- `src/note.rs` notes. `src/ledger.rs` the ledger. `src/ledger_cmd.rs` spend and ledger commands.
+- `src/store.rs` store lookup.
 - `src/promote.rs` the Relatum promote step. `src/hook.rs` the hook snippet.
 - `src/cli.rs` the command line. `LIBELLUS_AGENT` fills a required agent.
+- `src/check.rs` the store check used by the CLI and `libellus_check`.
+- `fsx::Lock` is the create-exclusive lock around resolve and spend.
 - `examples/perf.rs` release timings. `docs/perf/` the recorded numbers.
 - `tests/hostile_input.rs`, `tests/store_integrity.rs`, `tests/cli_and_groups.rs`,
   `tests/note_life.rs`, `tests/ledger_groups.rs`, `tests/promote.rs`,

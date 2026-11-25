@@ -378,8 +378,8 @@ fn a_taken_id_gets_a_suffix_and_unknown_arguments_fail() {
             "promote", "--agent", "main", "--id", "pick", "--scope", "net", "--colour", "red",
         ],
     );
-    assert_eq!(bad.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown argument"));
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown flag"));
 }
 
 fn private_has_promoted(dir: &Path) -> bool {
