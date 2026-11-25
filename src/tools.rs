@@ -17,6 +17,14 @@ const AGENT: Param = Param {
     choices: &[],
 };
 
+const NOTE_ID: Param = Param {
+    name: "id",
+    kind: Kind::Str,
+    required: true,
+    doc: "Note id, one or two slug segments (retry/post-question).",
+    choices: &[],
+};
+
 pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_note",
@@ -33,6 +41,30 @@ pub static TOOLS: &[Tool] = &[
             Param { name: "tags", kind: Kind::StrList, required: false, doc: "Tag slugs.", choices: &[] },
         ],
         run: note_add,
+    },
+    Tool {
+        name: "libellus_get",
+        group: "core",
+        description: "Read one of your notes by id, including its body. Missing or corrupt is an error.",
+        params: &[AGENT, NOTE_ID],
+        run: note_get,
+    },
+    Tool {
+        name: "libellus_resolve",
+        group: "core",
+        description: "Mark one of your notes resolved and append a one-line outcome. Refuses a note that is already resolved.",
+        params: &[
+            AGENT,
+            NOTE_ID,
+            Param {
+                name: "outcome",
+                kind: Kind::Str,
+                required: true,
+                doc: "One line, up to 200 characters, appended to the body.",
+                choices: &[],
+            },
+        ],
+        run: note_resolve,
     },
     Tool {
         name: "libellus_ls",
@@ -157,6 +189,57 @@ fn unique_id(dir: &std::path::Path, summary: &str) -> Result<String, String> {
         }
     }
     Err("could not find a free id; pass id".into())
+}
+
+fn note_get(a: &Args) -> Result<Value, String> {
+    let store = Store::open()?;
+    let agent = a.str("agent").unwrap_or_default();
+    let id = a.str("id").unwrap_or_default();
+    Ok(note_full(&note::load_one(&store, agent, id)?))
+}
+
+fn note_resolve(a: &Args) -> Result<Value, String> {
+    let store = Store::open()?;
+    let agent = a.str("agent").unwrap_or_default();
+    let id = a.str("id").unwrap_or_default();
+    let outcome = a.str("outcome").unwrap_or_default();
+    note::validate_outcome(outcome)?;
+    let mut note = note::load_one(&store, agent, id)?;
+    if note.status == "resolved" {
+        return Err(format!("note \"{id}\" is already resolved"));
+    }
+    note.status = "resolved".to_string();
+    let body = note::append_outcome(&note.body, outcome);
+    note.body = body;
+    let path = note::note_path(&store, agent, id)?;
+    fsx::write_atomic(&path, note.render().as_bytes(), true)
+        .map_err(|e| format!("note \"{id}\" not updated: {e}"))?;
+    Ok(note_full(&note))
+}
+
+/// Every field of one note. The body is not cut: this is a single note, not a list.
+fn note_full(n: &Note) -> Value {
+    let mut p = vec![
+        ("id", Value::str(&n.id)),
+        ("kind", Value::str(&n.kind)),
+        ("status", Value::str(&n.status)),
+        ("summary", Value::str(&n.summary)),
+        ("agent", Value::str(&n.agent)),
+        ("created", Value::str(&n.created)),
+        (
+            "evidence",
+            Value::Array(n.evidence.iter().map(Value::str).collect()),
+        ),
+        (
+            "tags",
+            Value::Array(n.tags.iter().map(Value::str).collect()),
+        ),
+        ("body", Value::str(&n.body)),
+    ];
+    if let Some(pr) = &n.promoted {
+        p.push(("promoted", Value::str(pr)));
+    }
+    Value::obj(p)
 }
 
 fn note_value(n: &Note, body: bool) -> Value {

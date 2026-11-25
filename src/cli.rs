@@ -15,6 +15,8 @@ USAGE
   libellus init                       create .libellus/ in this folder
   libellus note --agent A --kind K --summary S [--body B] [--id I] [--status open|resolved]
                 [--evidence tool:ref]... [--tags T]...
+  libellus get --agent A --id I
+  libellus resolve --agent A --id I --outcome TEXT
   libellus ls --agent A [--kind K] [--status S] [--limit N] [--bodies]
   libellus brief --agent A [--max_items N]       print the compaction brief as text
   libellus spend --agent A --task T [--step S] [--model M] [--tokens_in N] [--tokens_out N]
