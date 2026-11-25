@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.3.1
+
+Smaller tool definitions. A host sends `tools/list` to the model on every
+turn, so its size is paid on every turn. With every group on, the compact
+`tools` array went from about 14,600 bytes to 8,386, and the server
+`instructions` from 1,006 bytes to 536. Stores from 1.3.0 are read unchanged.
+
+Breaking changes (there are no users yet):
+
+- `libellus_archive` is merged into `libellus_ledger`: pass `archive: true`
+  with `agent` (or `LIBELLUS_AGENT`). On the CLI, `libellus archive --agent A`
+  is now `libellus ledger --agent A --archive`. The full-ledger error and the
+  brief say so.
+- `libellus_check` is no longer an MCP tool: `libellus_doctor` already runs
+  the same scan as its `store_files` check, and `fix: true` clears stale
+  locks and temp files as `check` did. The `libellus check` CLI command is
+  unchanged.
+- Descriptions are short: what the tool does, when to call it, and the one
+  thing that trips an agent up. The long explanations are in README.md and
+  SPEC.md. Batch item schemas (`notes`, `items`, `ops`) keep their types,
+  enums, required keys and `maxItems`, but no longer repeat a description
+  for each field.
+
+Fixed:
+
+- The schemas of the `add` and `set` ops in `libellus_plan` had `"type"`
+  twice, which a strict JSON parser rejects.
+
+Added:
+
+- `tests/surface.rs` starts `libellus-mcp`, lists the tools with every group
+  on, and fails when the array passes 8,500 bytes or the instructions reach
+  600 bytes.
+
 ## 1.3.0
 
 Notes and ledgers from 1.2.2 are read unchanged. New: batches, the shared

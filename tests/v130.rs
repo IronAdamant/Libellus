@@ -665,7 +665,10 @@ fn the_brief_lists_my_open_tasks_with_paths() {
     assert!(short.contains("Showing 1 of your 3 open tasks"), "{short}");
     assert!(!short.contains("write-tests"));
     let json = parsed(&ok(&cli(&dir, &["--version"])));
-    assert_eq!(json.get("version").and_then(Value::as_str), Some("1.3.0"));
+    assert_eq!(
+        json.get("version").and_then(Value::as_str),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
     // The MCP brief has the fields.
     let reply = talk(
         &dir,

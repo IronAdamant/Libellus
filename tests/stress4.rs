@@ -411,7 +411,7 @@ fn spend_refuses_before_the_cap_and_the_brief_still_returns_notes() {
     let err = String::from_utf8_lossy(&spent.stderr);
     assert!(!spent.status.success(), "{err}");
     assert!(
-        err.contains("byte cap") && err.contains("libellus archive"),
+        err.contains("byte cap") && err.contains("libellus ledger --agent main --archive"),
         "{err}"
     );
     assert_eq!(fs::metadata(&ledger).unwrap().len(), 32 * 1024 * 1024 + 1);
@@ -419,7 +419,7 @@ fn spend_refuses_before_the_cap_and_the_brief_still_returns_notes() {
     assert!(text.contains("must survive"), "{text}");
     assert!(text.contains("Ledger:"), "{text}");
     assert!(text.contains("byte cap"), "{text}");
-    assert!(text.contains("libellus archive"), "{text}");
+    assert!(text.contains("--archive"), "{text}");
 
     let near = project("s4-near");
     init(&near);
@@ -479,7 +479,7 @@ fn archive_keeps_the_old_ledger_and_totals_start_again() {
             "5",
         ],
     );
-    let out = must(&dir, &["archive", "--agent", "main"]);
+    let out = must(&dir, &["ledger", "--agent", "main", "--archive"]);
     assert!(out.contains("\"bytes\":"), "{out}");
     let archived = dir
         .join(".libellus/agents/main/archive")

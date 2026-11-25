@@ -148,8 +148,11 @@ fn param_schema(p: &Param) -> Value {
             f.push(("minimum", Value::int(min)));
         }
         Kind::Object(fields) => {
+            // `type` is already set above; a second one is a duplicate key.
             for (k, v) in object_schema(fields) {
-                f.push((k, v));
+                if k != "type" {
+                    f.push((k, v));
+                }
             }
         }
         Kind::Objects(fields, max) => {
@@ -164,7 +167,11 @@ fn param_schema(p: &Param) -> Value {
             Value::Array(p.choices.iter().map(|c| Value::str(*c)).collect()),
         ));
     }
-    f.push(("description", Value::str(p.doc)));
+    // A batch item's fields leave `doc` empty: the parent describes the item
+    // once, so the schema does not repeat what the single form already says.
+    if !p.doc.is_empty() {
+        f.push(("description", Value::str(p.doc)));
+    }
     Value::obj(f)
 }
 

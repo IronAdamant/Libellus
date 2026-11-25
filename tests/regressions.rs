@@ -434,13 +434,19 @@ fn list_pages_with_a_stable_cursor_and_check_is_a_tool() {
         &dir,
         b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n",
     );
-    assert!(listed[0].contains("libellus_check"), "{}", listed[0]);
+    // Since 1.3.1 the store check is part of libellus_doctor.
+    assert!(listed[0].contains("libellus_doctor"), "{}", listed[0]);
+    assert!(!listed[0].contains("libellus_check"), "{}", listed[0]);
     assert!(listed[0].contains("\"minimum\":1"), "{}", listed[0]);
     assert!(
         !listed[0].contains("\"host\""),
         "host is CLI only: {}",
         listed[0]
     );
-    let checked = talk(&dir, call("libellus_check", "{}", 2).as_bytes());
-    assert!(is_ok(&checked[0]), "{}", checked[0]);
+    let checked = talk(&dir, call("libellus_doctor", "{}", 2).as_bytes());
+    assert!(
+        is_ok(&checked[0]) && checked[0].contains("store_files"),
+        "{}",
+        checked[0]
+    );
 }

@@ -247,7 +247,7 @@ fn a_symlinked_notes_or_archive_folder_is_refused() {
     );
     assert!(err_text(&out).contains("symlink"));
     std::os::unix::fs::symlink(&outside, agent.join("archive")).unwrap();
-    let out = cli(&dir, &["archive", "--agent", "main"]);
+    let out = cli(&dir, &["ledger", "--agent", "main", "--archive"]);
     assert!(err_text(&out).contains("symlink"));
     assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
     assert!(agent.join("ledger.jsonl").exists());

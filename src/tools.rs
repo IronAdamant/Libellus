@@ -8,341 +8,262 @@ use crate::tool::{Args, Kind, Param, Tool};
 
 pub const GROUPS: &[&str] = &["core", "ledger", "board"];
 
-const AGENT: Param = Param {
-    name: "agent",
-    kind: Kind::Str,
-    required: true,
-    doc: "Your own agent name: lowercase letters, digits, '-' (main, sub-2). Notes are private to it.",
-    choices: &[],
-};
+/// An optional parameter. `doc` is empty for a batch item's fields.
+const fn opt(name: &'static str, kind: Kind, doc: &'static str) -> Param {
+    Param {
+        name,
+        kind,
+        required: false,
+        doc,
+        choices: &[],
+    }
+}
 
-const NOTE_ID: Param = Param {
-    name: "id",
-    kind: Kind::Str,
-    required: true,
-    doc: "Note id, one or two slug segments (retry/post-question).",
-    choices: &[],
-};
+/// A required parameter.
+const fn req(name: &'static str, kind: Kind, doc: &'static str) -> Param {
+    Param {
+        name,
+        kind,
+        required: true,
+        doc,
+        choices: &[],
+    }
+}
+
+/// A string parameter limited to `choices`, sent as a schema enum.
+const fn one_of(
+    name: &'static str,
+    required: bool,
+    doc: &'static str,
+    choices: &'static [&'static str],
+) -> Param {
+    Param {
+        name,
+        kind: Kind::Str,
+        required,
+        doc,
+        choices,
+    }
+}
+
+const AGENT: Param = req("agent", Kind::Str, "Your agent name (main, sub-2).");
+
+const NOTE_ID: Param = req("id", Kind::Str, "Note id.");
 
 pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_note",
         group: "core",
-        description: "Write private notes before you forget a decision, a dead end, or an open question. Batch: pass notes (up to 50) to write several in one call, which costs one turn instead of one per note. A batch is checked whole first: one bad note writes nothing and the error names it. Or pass one note's kind and summary. Never overwrites: a taken id fails. Point at evidence as tool:reference instead of copying it.",
+        description: "Write private notes as you work: decisions, dead ends, findings, open questions. Pass notes to write several in one call; one bad note writes nothing. A taken id fails.",
         params: &[
             AGENT,
-            Param { name: "notes", kind: Kind::Objects(NOTE_FIELDS, crate::note_cmd::MAX_BATCH), required: false, doc: "A batch of up to 50 notes, each {kind, summary, body?, id?, status?, evidence?, tags?}. Use this instead of the single-note fields.", choices: &[] },
-            Param { name: "kind", kind: Kind::Str, required: false, doc: "One note: what it is. Required without notes.", choices: note::KINDS },
-            Param { name: "summary", kind: Kind::Str, required: false, doc: "One note: one line, up to 200 characters. Required without notes.", choices: &[] },
-            Param { name: "body", kind: Kind::Str, required: false, doc: "The detail, under about 300 words, at most 20000 bytes.", choices: &[] },
-            Param { name: "id", kind: Kind::Str, required: false, doc: "Slug, up to two segments (retry/post-question). Made from the summary if absent. Never overwrites.", choices: &[] },
-            Param { name: "status", kind: Kind::Str, required: false, doc: "open or resolved. Default: open for a question, resolved otherwise.", choices: note::STATUSES },
-            Param { name: "evidence", kind: Kind::StrList, required: false, doc: "Pointers to proof, each tool:reference (trammel:plan-3/step-2). No copies.", choices: &[] },
-            Param { name: "tags", kind: Kind::StrList, required: false, doc: "Tag slugs.", choices: &[] },
+            opt(
+                "notes",
+                Kind::Objects(NOTE_FIELDS, crate::note_cmd::MAX_BATCH),
+                "Batch, instead of the single-note fields below.",
+            ),
+            one_of("kind", false, "Required without notes.", note::KINDS),
+            opt(
+                "summary",
+                Kind::Str,
+                "One line, up to 200 characters. Required without notes.",
+            ),
+            opt("body", Kind::Str, "Detail, under about 300 words."),
+            opt("id", Kind::Str, "Slug, one or two segments (a/b). Default: from summary."),
+            one_of(
+                "status",
+                false,
+                "Default: open for a question, else resolved.",
+                note::STATUSES,
+            ),
+            opt(
+                "evidence",
+                Kind::StrList,
+                "Pointers as tool:reference (trammel:plan-3/step-2), not copies.",
+            ),
+            opt("tags", Kind::StrList, "Tag slugs."),
         ],
         run: crate::note_cmd::add,
     },
     Tool {
         name: "libellus_get",
         group: "core",
-        description: "Read one of your notes by id, including its body. Use this when you know the id. Missing, corrupt, or another agent's file is an error that says how to list or create the note.",
+        description: "Read one of your notes in full, by id.",
         params: &[AGENT, NOTE_ID],
         run: note_get,
     },
     Tool {
         name: "libellus_resolve",
         group: "core",
-        description: "Mark notes resolved and append a one-line outcome to each. Batch: pass items (up to 50 of {id, outcome, supersede?}) to close several in one call; one bad item writes nothing. A note that is already resolved is left unchanged unless supersede is set, or the outcome starts with SUPERSEDED: or REVERSED:.",
+        description: "Close notes: mark resolved, append a one-line outcome. Pass items to close several in one call; one bad item writes nothing. A resolved note changes only with supersede or an outcome starting SUPERSEDED: or REVERSED:.",
         params: &[
             AGENT,
-            Param { name: "items", kind: Kind::Objects(RESOLVE_FIELDS, crate::note_cmd::MAX_BATCH), required: false, doc: "A batch of up to 50 {id, outcome, supersede?}. Use this instead of id and outcome.", choices: &[] },
-            Param { name: "id", kind: Kind::Str, required: false, doc: "One note: its id. Required without items.", choices: &[] },
-            Param {
-                name: "outcome",
-                kind: Kind::Str,
-                required: false,
-                doc: "One note: one line, up to 200 characters, appended to the body. SUPERSEDED: or REVERSED: marks the note replaced. Required without items.",
-                choices: &[],
-            },
-            Param {
-                name: "supersede",
-                kind: Kind::Bool,
-                required: false,
-                doc: "Mark the note replaced. Allowed when it is already resolved.",
-                choices: &[],
-            },
+            opt(
+                "items",
+                Kind::Objects(RESOLVE_FIELDS, crate::note_cmd::MAX_BATCH),
+                "Batch, instead of id and outcome.",
+            ),
+            opt("id", Kind::Str, "Required without items."),
+            opt(
+                "outcome",
+                Kind::Str,
+                "One line, up to 200 characters. Required without items.",
+            ),
+            opt("supersede", Kind::Bool, "Mark the note replaced."),
         ],
         run: crate::note_cmd::resolve,
     },
     Tool {
         name: "libellus_ls",
         group: "core",
-        description: "List your notes, oldest first within the page. limit (default 50) keeps the newest page. offset skips that many newest notes so the next call can read the older page. total is the full count.",
+        description: "List your notes: the newest page, oldest first. total is the full count.",
         params: &[
             AGENT,
-            Param { name: "kind", kind: Kind::Str, required: false, doc: "Only this kind.", choices: note::KINDS },
-            Param { name: "status", kind: Kind::Str, required: false, doc: "Only this status.", choices: note::STATUSES },
-            Param { name: "limit", kind: Kind::UInt, required: false, doc: "Most notes to return, newest kept. Default 50. Minimum 1.", choices: &[] },
-            Param { name: "offset", kind: Kind::UInt, required: false, doc: "Skip this many of the newest matching notes (newer than before_id, when given) before applying limit. Default 0. next_offset is absolute: pass it without before_id. Prefer before_id: a note written between pages can show up twice with offset.", choices: &[] },
-            Param { name: "before_id", kind: Kind::Str, required: false, doc: "Stable cursor: only notes older than this one in list order (seq, or created then id). Pass next_before_id from the previous page; it still works after that note is resolved or deleted. A note id is also accepted while the note exists.", choices: &[] },
-            Param { name: "bodies", kind: Kind::Bool, required: false, doc: "Include each body (cut at 4000 characters).", choices: &[] },
+            one_of("kind", false, "", note::KINDS),
+            one_of("status", false, "", note::STATUSES),
+            opt("limit", Kind::UInt, "Default 50."),
+            opt("offset", Kind::UInt, "Skip this many newest. Prefer before_id."),
+            opt("before_id", Kind::Str, "Next page: next_before_id from the last one."),
+            opt("bodies", Kind::Bool, "Include bodies, cut at 4000 characters."),
         ],
         run: note_ls,
     },
     Tool {
         name: "libellus_brief",
         group: "core",
-        description: "Call this when a session starts and after compaction, before other work: it is the one call you need to pick up again. Returns your open board tasks (with their path in the tree), open questions, the latest context, recent decisions, replaced decisions, dead ends, findings, costs, and a short text. max_items caps every section (default 5, at most 50). The text is capped at 8192 bytes and says when it was cut. A ledger that cannot be read sets ledger_error and still returns the notes. A Next line is added only when a question is open or a decision or dead end is not promoted.",
+        description: "Call at session start and after compaction, before other work. One call returns your open board tasks, open questions, recent decisions, dead ends, findings, costs and a short text.",
         params: &[
             AGENT,
-            Param { name: "max_items", kind: Kind::UInt, required: false, doc: "Most notes per section, including open questions and task costs. Default 5. At most 50. Newest items are kept.", choices: &[] },
+            opt("max_items", Kind::UInt, "Per section. Default 5, at most 50."),
         ],
         run: brief,
     },
     Tool {
         name: "libellus_promote",
         group: "core",
-        description: "Share one private note by writing it into Relatum, then record that id. An open question must be resolved first. A second call names the existing Relatum id and writes nothing. Does not run Relatum, and does not create .swarmnotes/.",
+        description: "Share one note with the swarm: write it into Relatum and record the new id. Resolve an open question first. A repeat call writes nothing.",
         params: &[
             AGENT,
             NOTE_ID,
-            Param {
-                name: "scope",
-                kind: Kind::Str,
-                required: true,
-                doc: "Relatum scope, such as net or _shared. The new id is the scope plus this note's id.",
-                choices: &[],
-            },
+            req("scope", Kind::Str, "Relatum scope (net, _shared)."),
         ],
         run: promote_note,
     },
     Tool {
         name: "libellus_spend",
         group: "ledger",
-        description: "Append tokens and cost you already know for one step. Libellus only adds them up. Each call adds a line; it does not replace a previous spend.",
+        description: "Record tokens and cost you already know for one step. Each call appends; Libellus only adds up.",
         params: &[
             AGENT,
-            Param { name: "task", kind: Kind::Str, required: true, doc: "Task slug the spend belongs to.", choices: &[] },
-            Param { name: "step", kind: Kind::Str, required: false, doc: "Step slug within the task.", choices: &[] },
-            Param { name: "model", kind: Kind::Str, required: false, doc: "Model name, free text.", choices: &[] },
-            Param { name: "tokens_in", kind: Kind::UInt, required: false, doc: "Input tokens.", choices: &[] },
-            Param { name: "tokens_out", kind: Kind::UInt, required: false, doc: "Output tokens.", choices: &[] },
-            Param { name: "cost_micro_usd", kind: Kind::UInt, required: false, doc: "Cost in millionths of a US dollar (1 cent = 10000).", choices: &[] },
-            Param { name: "note", kind: Kind::Str, required: false, doc: "One line, up to 200 characters.", choices: &[] },
+            req("task", Kind::Str, "Task slug."),
+            opt("step", Kind::Str, "Step slug."),
+            opt("model", Kind::Str, ""),
+            opt("tokens_in", Kind::UInt, ""),
+            opt("tokens_out", Kind::UInt, ""),
+            opt("cost_micro_usd", Kind::UInt, "Millionths of a US dollar."),
+            opt("note", Kind::Str, "One line."),
         ],
         run: spend,
     },
     Tool {
         name: "libellus_ledger",
         group: "ledger",
-        description: "Totals of tokens and cost. Pass agent, task, or step to narrow. Omit agent to sum every agent in the store. A damaged ledger is an error, names the file, and is not repaired. by_task lists every task. The brief caps that list.",
+        description: "Totals of tokens and cost, by task. Narrow by agent, task or step. archive moves one agent's ledger aside and starts a fresh one, when spend says it is full.",
         params: &[
-            Param {
-                name: "agent",
-                kind: Kind::Str,
-                required: false,
-                doc: "Agent to sum. Omit to sum every agent in the store.",
-                choices: &[],
-            },
-            Param { name: "task", kind: Kind::Str, required: false, doc: "Only this task slug.", choices: &[] },
-            Param { name: "step", kind: Kind::Str, required: false, doc: "Only this step slug.", choices: &[] },
+            opt("agent", Kind::Str, "Omit to sum every agent."),
+            opt("task", Kind::Str, ""),
+            opt("step", Kind::Str, ""),
+            opt("archive", Kind::Bool, "With agent only."),
         ],
         run: ledger_report,
     },
     Tool {
-        name: "libellus_archive",
-        group: "ledger",
-        description: "Move this agent's ledger into archive/ and start a fresh ledger. The old file is kept and is not included in later totals. Use this when a spend says the ledger is over the 32 MiB cap.",
-        params: &[AGENT],
-        run: archive_ledger,
-    },
-    Tool {
-        name: "libellus_check",
-        group: "core",
-        description: "Read every note, ledger and board task. Fails if a file is damaged, the board is out of step (an open child under a closed parent, an orphan), a note is over the size cap, a total overflows, a note's agent field does not match its folder, a ledger line was left out, or a stale lock is left behind. Stale locks and leftover temp files are removed first.",
-        params: &[],
-        run: check_tool,
-    },
-    Tool {
         name: "libellus_doctor",
         group: "core",
-        description: "Diagnose the setup: version, store location, LIBELLUS_DIR and LIBELLUS_AGENT, whether the store is writable, damaged files, abandoned locks, the AGENTS.md tool-groups line, libellus-mcp beside the binary, the Relatum store. Returns ok and checks [{name, ok, detail, fix}]. Read-only unless fix is set, which only clears abandoned locks and temp files.",
-        params: &[Param { name: "fix", kind: Kind::Bool, required: false, doc: "Remove locks and temp files whose writer is gone, as check does. Nothing else is changed.", choices: &[] }],
+        description: "Diagnose the setup and read every note, ledger and board file for damage. Returns ok and checks [{name, ok, detail, fix}]. Read-only unless fix.",
+        params: &[opt(
+            "fix",
+            Kind::Bool,
+            "Remove locks and temp files whose writer is gone.",
+        )],
         run: crate::doctor::run,
     },
     Tool {
         name: "libellus_plan",
         group: "board",
-        description: "Change the shared task board in one call: the board is every agent's working task list (notes stay private). ops is a batch of up to 100 {add: {title, id?, parent?, owner?, status?}}, {set: {id, status?, title?, parent?, owner?, outcome?, evidence?}} or {remove: id}. outline adds a whole tree from a markdown checkbox list (\"- [ ] Project\\n  - [ ] Task\"; [x] done, [~] doing, [!] blocked, [-] dropped), under parent if given. Everything is checked first; one bad op writes nothing. A parent closes by itself when all its children are done or dropped (at least one done), up to the project, and a closed project moves to the archive. Dropping a task drops its open children. Reopening a child reopens parents that closed by themselves. A task cannot be done while a child is open. Batch your ticks: one call for several tasks.",
+        description: "Change the shared task board, every agent's working list, in one call. ops (applied in order): {add:{title,...}}, {set:{id,...}}, {remove:id}. outline: a markdown checkbox tree, two spaces per level: - [ ] todo, [~] doing, [!] blocked, [x] done, [-] dropped. One bad op writes nothing. A parent closes when its children are done or dropped; a task with an open child cannot be done. Tick several tasks per call.",
         params: &[
             AGENT,
-            Param { name: "ops", kind: Kind::Objects(OP_FIELDS, crate::plan::MAX_OPS), required: false, doc: "Up to 100 ops, applied in order: {add: {...}}, {set: {...}} or {remove: id}.", choices: &[] },
-            Param { name: "outline", kind: Kind::Str, required: false, doc: "A markdown checkbox list, two spaces or a tab per level: - [ ] todo, - [~] doing, - [!] blocked, - [x] done, - [-] dropped. Ids are made from the titles and returned in added.", choices: &[] },
-            Param { name: "parent", kind: Kind::Str, required: false, doc: "Task id the outline goes under. Omit to make its top lines projects.", choices: &[] },
+            opt("ops", Kind::Objects(OP_FIELDS, crate::plan::MAX_OPS), ""),
+            opt("outline", Kind::Str, "Ids come back in added."),
+            opt("parent", Kind::Str, "Task the outline goes under. Omit for projects."),
         ],
         run: crate::plan::run,
     },
     Tool {
         name: "libellus_board",
         group: "board",
-        description: "Read the shared task board as a checkbox tree (ids shown, @owner when not you) plus counts per status. Open tasks only by default. Filter by owner or project. The brief already lists your own open tasks; call this for the whole picture.",
+        description: "Read the shared task board as a checkbox tree with counts per status. Open tasks only by default.",
         params: &[
             AGENT,
-            Param { name: "owner", kind: Kind::Str, required: false, doc: "Only tasks owned by this agent (with their parents for context).", choices: &[] },
-            Param { name: "project", kind: Kind::Str, required: false, doc: "Only this project (a top-level task id).", choices: &[] },
-            Param { name: "open_only", kind: Kind::Bool, required: false, doc: "Only todo, doing and blocked tasks. Default true.", choices: &[] },
-            Param { name: "include_archived", kind: Kind::Bool, required: false, doc: "Also show archived (closed) projects.", choices: &[] },
+            opt("owner", Kind::Str, ""),
+            opt("project", Kind::Str, "Top-level task id."),
+            opt("open_only", Kind::Bool, "Default true."),
+            opt("include_archived", Kind::Bool, ""),
         ],
         run: crate::board_view::run,
     },
 ];
 
+// Batch item fields carry no docs: the single form and the parent's
+// description already say what each field is.
+
 const NOTE_FIELDS: &[Param] = &[
-    Param {
-        name: "kind",
-        kind: Kind::Str,
-        required: true,
-        doc: "What the note is.",
-        choices: note::KINDS,
-    },
-    Param {
-        name: "summary",
-        kind: Kind::Str,
-        required: true,
-        doc: "One line, up to 200 characters.",
-        choices: &[],
-    },
-    Param {
-        name: "body",
-        kind: Kind::Str,
-        required: false,
-        doc: "The detail, under about 300 words.",
-        choices: &[],
-    },
-    Param {
-        name: "id",
-        kind: Kind::Str,
-        required: false,
-        doc: "Slug, up to two segments. Made from the summary if absent.",
-        choices: &[],
-    },
-    Param {
-        name: "status",
-        kind: Kind::Str,
-        required: false,
-        doc: "open or resolved.",
-        choices: note::STATUSES,
-    },
-    Param {
-        name: "evidence",
-        kind: Kind::StrList,
-        required: false,
-        doc: "Pointers, each tool:reference.",
-        choices: &[],
-    },
-    Param {
-        name: "tags",
-        kind: Kind::StrList,
-        required: false,
-        doc: "Tag slugs.",
-        choices: &[],
-    },
+    one_of("kind", true, "", note::KINDS),
+    req("summary", Kind::Str, ""),
+    opt("body", Kind::Str, ""),
+    opt("id", Kind::Str, ""),
+    one_of("status", false, "", note::STATUSES),
+    opt("evidence", Kind::StrList, ""),
+    opt("tags", Kind::StrList, ""),
 ];
 
 const RESOLVE_FIELDS: &[Param] = &[
-    Param {
-        name: "id",
-        kind: Kind::Str,
-        required: true,
-        doc: "Note id.",
-        choices: &[],
-    },
-    Param {
-        name: "outcome",
-        kind: Kind::Str,
-        required: true,
-        doc: "One line, up to 200 characters.",
-        choices: &[],
-    },
-    Param {
-        name: "supersede",
-        kind: Kind::Bool,
-        required: false,
-        doc: "Mark the note replaced.",
-        choices: &[],
-    },
+    req("id", Kind::Str, ""),
+    req("outcome", Kind::Str, ""),
+    opt("supersede", Kind::Bool, ""),
 ];
 
 const ADD_FIELDS: &[Param] = &[
-    Param {
-        name: "title",
-        kind: Kind::Str,
-        required: true,
-        doc: "One line, up to 200 characters.",
-        choices: &[],
-    },
-    Param {
-        name: "id",
-        kind: Kind::Str,
-        required: false,
-        doc: "One slug. Made from the title if absent.",
-        choices: &[],
-    },
-    Param {
-        name: "parent",
-        kind: Kind::Str,
-        required: false,
-        doc: "Parent task id. Omit for a new project.",
-        choices: &[],
-    },
-    Param {
-        name: "owner",
-        kind: Kind::Str,
-        required: false,
-        doc: "Agent name that does it (sub-2). Default: you.",
-        choices: &[],
-    },
-    Param {
-        name: "status",
-        kind: Kind::Str,
-        required: false,
-        doc: "Default todo.",
-        choices: crate::board::STATUSES,
-    },
+    req("title", Kind::Str, ""),
+    opt("id", Kind::Str, ""),
+    opt("parent", Kind::Str, "Omit for a project."),
+    opt("owner", Kind::Str, "Default: you."),
+    one_of("status", false, "", crate::board::STATUSES),
 ];
 
 const SET_FIELDS: &[Param] = &[
-    Param { name: "id", kind: Kind::Str, required: true, doc: "Task id.", choices: &[] },
-    Param { name: "status", kind: Kind::Str, required: false, doc: "New status.", choices: crate::board::STATUSES },
-    Param { name: "title", kind: Kind::Str, required: false, doc: "New title.", choices: &[] },
-    Param { name: "parent", kind: Kind::Str, required: false, doc: "Move under this task; empty string makes it a project.", choices: &[] },
-    Param { name: "owner", kind: Kind::Str, required: false, doc: "Hand it to this agent.", choices: &[] },
-    Param { name: "outcome", kind: Kind::Str, required: false, doc: "One line: what came of it. Empty string clears it.", choices: &[] },
-    Param { name: "evidence", kind: Kind::StrList, required: false, doc: "Pointers, each tool:reference (adsertio:claim-7, trammel:plan-3/step-2). Replaces the list.", choices: &[] },
+    req("id", Kind::Str, ""),
+    one_of("status", false, "", crate::board::STATUSES),
+    opt("title", Kind::Str, ""),
+    opt("parent", Kind::Str, "\"\" makes it a project."),
+    opt("owner", Kind::Str, ""),
+    opt("outcome", Kind::Str, "One line. \"\" clears it."),
+    opt(
+        "evidence",
+        Kind::StrList,
+        "tool:reference. Replaces the list.",
+    ),
 ];
 
 const OP_FIELDS: &[Param] = &[
-    Param {
-        name: "add",
-        kind: Kind::Object(ADD_FIELDS),
-        required: false,
-        doc: "Add a task.",
-        choices: &[],
-    },
-    Param {
-        name: "set",
-        kind: Kind::Object(SET_FIELDS),
-        required: false,
-        doc: "Change a task.",
-        choices: &[],
-    },
-    Param {
-        name: "remove",
-        kind: Kind::Str,
-        required: false,
-        doc: "Delete a todo task with no children (a mistake). Use set status dropped otherwise.",
-        choices: &[],
-    },
+    opt("add", Kind::Object(ADD_FIELDS), ""),
+    opt("set", Kind::Object(SET_FIELDS), ""),
+    opt(
+        "remove",
+        Kind::Str,
+        "Delete a childless todo task. Else set status dropped.",
+    ),
 ];
 
 fn note_get(a: &Args) -> Result<Value, String> {
@@ -552,10 +473,6 @@ fn brief(a: &Args) -> Result<Value, String> {
     crate::brief::run(a)
 }
 
-fn archive_ledger(a: &Args) -> Result<Value, String> {
-    crate::ledger_cmd::archive(a.str("agent").unwrap_or_default())
-}
-
 fn promote_note(a: &Args) -> Result<Value, String> {
     promote::promote(
         a.str("agent").unwrap_or_default(),
@@ -568,10 +485,22 @@ fn spend(a: &Args) -> Result<Value, String> {
     crate::ledger_cmd::spend(a)
 }
 
+/// Totals, or with `archive` set, move one agent's ledger aside. The agent
+/// is optional for totals, so `LIBELLUS_AGENT` fills it only for archive.
 fn ledger_report(a: &Args) -> Result<Value, String> {
-    crate::ledger_cmd::report(a)
-}
-
-fn check_tool(_a: &Args) -> Result<Value, String> {
-    crate::check::run()
+    if a.bool("archive") != Some(true) {
+        return crate::ledger_cmd::report(a);
+    }
+    if a.has("task") || a.has("step") {
+        return Err("archive takes only agent; drop task and step".into());
+    }
+    let agent = match a.str("agent") {
+        Some(name) => name.to_string(),
+        None => std::env::var("LIBELLUS_AGENT")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or("archive needs agent. Pass agent, or set LIBELLUS_AGENT.")?,
+    };
+    crate::ledger_cmd::archive(&agent)
 }

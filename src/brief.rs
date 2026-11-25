@@ -286,9 +286,9 @@ pub fn run(a: &Args) -> Result<Value, String> {
 }
 
 fn cap_hint(mut err: String, agent: &str) -> String {
-    if err.contains("byte cap") && !err.contains("line cap") && !err.contains("libellus archive") {
+    if err.contains("byte cap") && !err.contains("line cap") && !err.contains("--archive") {
         err.push_str(&format!(
-            " Archive it with libellus archive --agent {agent}. The old lines are kept. Notes in this brief are still listed."
+            " Archive it: libellus_ledger with archive true (libellus ledger --agent {agent} --archive). The old lines are kept. Notes in this brief are still listed."
         ));
     }
     err

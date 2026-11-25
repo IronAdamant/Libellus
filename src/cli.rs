@@ -32,7 +32,7 @@ USAGE
   libellus spend --agent A --task T [--step S] [--model M] [--tokens_in N] [--tokens_out N]
                  [--cost_micro_usd N] [--note TEXT]
   libellus ledger [--agent A] [--task T] [--step S]
-  libellus archive --agent A            move the ledger into archive/ and start a fresh one
+  libellus ledger --agent A --archive   move the ledger into archive/ and start a fresh one
   libellus hook --agent NAME [--host cursor|claude|generic]
   libellus hook-run session-start --agent NAME | subagent-start
                                       what the Claude Code hooks run (reads the hook JSON on stdin)

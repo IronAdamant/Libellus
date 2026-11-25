@@ -2,9 +2,9 @@
 
 Libellus is a private notepad and number ledger per agent. The files are the
 product. The CLI and the MCP server are conveniences over them, and any agent
-that can read and write files can use the store without either. Libellus 1.3.0
-reads notes and ledgers written by 1.0.0 to 1.2.2, and adds the board
-(section 5). Notes written since 1.2.0 have `seq`; a 1.1.2 binary rejects that
+that can read and write files can use the store without either. Libellus 1.3.1
+reads notes and ledgers written by 1.0.0 to 1.3.0 (1.3.0 added the board,
+section 5). Notes written since 1.2.0 have `seq`; a 1.1.2 binary rejects that
 key. An older binary ignores `board/` and `board.html`.
 
 ## 1. Layout
@@ -139,7 +139,8 @@ it, and `spend` will not append until that is done. A symlink ledger, or a
 ledger that is not a regular file, is refused for both read and append.
 A ledger over 32 MiB, or a line over 64 KiB, is an error and is not read.
 `spend` refuses before an append would pass 32 MiB, and the file is unchanged.
-`libellus archive` renames `ledger.jsonl` to
+`libellus_ledger` with `archive: true` (CLI `libellus ledger --agent A
+--archive`) renames `ledger.jsonl` to
 `archive/ledger-YYYYMMDDTHHMMSSZ.jsonl` (digits, `T`, and `Z` only, so the
 name is safe on Windows) and starts a fresh ledger. The old file is kept and
 is not included in later totals. `check` reads archives and does not apply
@@ -462,7 +463,8 @@ types, missing required arguments and values outside an `enum` are errors with
   decision or dead end has not been promoted. `text` is the short form (one
   line per item). The arrays are the same facts for a caller that parses
   fields. Both stay so a 1.0.0 caller keeps working.
-- `libellus_check` `{}` reads every note and ledger. It fails when a file is
+- `libellus check` (a CLI command; over MCP the same scan is
+  `libellus_doctor`'s `store_files` check) reads every note and ledger. It fails when a file is
   damaged, a note is over 1 MiB, a ledger total overflows, a note's `agent`
   field does not match its folder, a note id cannot be opened, a ledger line
   was left out of the totals, a ledger ends in a partial line, or a stale
@@ -493,23 +495,32 @@ types, missing required arguments and values outside an `enum` are errors with
 - `libellus_spend` `{agent, task, step?, model?, tokens_in?, tokens_out?,
   cost_micro_usd?, note?}` (at least one number) returns the task and agent
   totals.
-- `libellus_ledger` `{agent?, task?, step?}` returns the totals described above.
-- `libellus_archive` `{agent}` moves that agent's ledger into `archive/` and
-  starts a fresh file. It is in the ledger group.
+- `libellus_ledger` `{agent?, task?, step?, archive?}` returns the totals
+  described above. With `archive: true` it instead moves that agent's ledger
+  into `archive/` and starts a fresh file, returning `{agent, archived,
+  bytes}`. Archive needs `agent` (or `LIBELLUS_AGENT`) and takes no `task`
+  or `step`.
 - `libellus_plan` and `libellus_board`: section 5. They are the board group.
 
 A batch argument (`notes`, `items`, `ops`) is a JSON array of objects whose
 keys are checked like top-level arguments: an unknown key, a wrong type, a
 missing required key or a value outside an `enum` is an error naming the
-item. The schema gives each item's properties and `maxItems`. On the CLI it
+item. The schema gives each item's properties (types, enums, required keys)
+and `maxItems`, but not a description per field: a field means what the
+same field means in the single form.
+
+The definitions are kept small because a host sends them to the model on
+every turn. `tests/surface.rs` fails when the compact JSON of the
+`tools/list` array, every group on, passes 8,500 bytes, or the server
+`instructions` reach 600 bytes. On the CLI it
 is `--notes '<json>'` or `--notes-file PATH` (also `--items-file`,
 `--ops-file` and `--outline-file`); the file is at most 4 MiB.
 
 `LIBELLUS_AGENT`, when set and non-empty, fills a required `agent` that the
 caller omitted. An explicit `agent` wins.
 
-Groups: `core` (note, get, resolve, ls, brief, promote, check, doctor) is
-always on; `ledger` (spend, ledger, archive) and `board` (plan, board) can be
+Groups: `core` (note, get, resolve, ls, brief, promote, doctor) is
+always on; `ledger` (spend, ledger) and `board` (plan, board) can be
 switched off. A hidden tool's call returns `isError`.
 
 The choice is one line in the project's AGENTS.md `agent-tools` block:

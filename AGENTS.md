@@ -62,7 +62,7 @@ cargo build --release --locked
 - `src/promote.rs` the Relatum promote step. `src/hook.rs` the hook snippet and
   `hook-run` (what the Claude Code hooks run).
 - `src/cli.rs` the command line. `LIBELLUS_AGENT` fills a required agent.
-- `src/check.rs` the store check used by the CLI, `libellus_check` and doctor
+- `src/check.rs` the store check used by `libellus check` and doctor
   (notes, ledgers and the board).
 - `fsx::Lock` is the create-exclusive lock around resolve, promote, spend,
   archive, ledger reads, the seq counters and every board write. Stale locks are removed only by
@@ -72,5 +72,7 @@ cargo build --release --locked
   `tests/note_life.rs`, `tests/ledger_groups.rs`, `tests/promote.rs`,
   `tests/hook.rs`, `tests/agent_ux.rs`, `tests/review4.rs`, `tests/review5.rs`,
   `tests/v130.rs` (batches, the board, the page, doctor, hooks): the failure
-  modes the design avoids.
+  modes the design avoids. `tests/surface.rs` holds `tools/list` to 8,500
+  bytes and the instructions under 600: keep tool and parameter descriptions
+  short; batch item fields carry no description.
   Keep them passing.

@@ -210,8 +210,8 @@ directory, or the folder named by `$LIBELLUS_DIR`.
   board.html                      the read-only page
 ```
 
-The ledger only grows. When it gets large, `libellus archive --agent main`
-moves it into `archive/` and starts a fresh one; the old file is kept but no
+The ledger only grows. When it gets large, `libellus ledger --agent main --archive`
+(MCP: `libellus_ledger` with `archive: true`) moves it into `archive/` and starts a fresh one; the old file is kept but no
 longer counted. The file format is in [SPEC.md](SPEC.md).
 
 ## Using it from an agent (MCP)
@@ -239,12 +239,10 @@ project.
 | `libellus_resolve` | core | Mark a note resolved with a one-line outcome, or up to 50 (`items`). `supersede` marks it replaced. |
 | `libellus_ls` | core | List your notes. Page with `before_id`: pass back `next_before_id`. |
 | `libellus_brief` | core | The compaction brief, with your open board tasks. Still returns the notes if the ledger or board cannot be read. |
-| `libellus_check` | core | Read every note, ledger and board file, and fail on damage. Clears locks and temp files left by a writer that is gone. |
-| `libellus_doctor` | core | Diagnose the setup; each failing check says how to fix it. |
+| `libellus_doctor` | core | Diagnose the setup and read every note, ledger and board file for damage; each failing check says how to fix it. `fix` clears locks and temp files left by a writer that is gone. |
 | `libellus_promote` | core | Copy a note into Relatum and record its Relatum id. |
 | `libellus_spend` | ledger | Record tokens and cost for a step. Refuses once the ledger would pass 32 MiB. |
-| `libellus_ledger` | ledger | Totals, by task, by step, or across every agent. |
-| `libellus_archive` | ledger | Move the ledger into `archive/` and start a fresh one. |
+| `libellus_ledger` | ledger | Totals, by task, by step, or across every agent. `archive: true` (with `agent`) moves that ledger into `archive/` and starts a fresh one. |
 | `libellus_plan` | board | Change the board: up to 100 add, set and remove ops, or an outline, in one call. All or nothing. |
 | `libellus_board` | board | The board as a checkbox tree, with counts. Filter by owner or project. |
 
@@ -253,7 +251,13 @@ nothing, and the error names every bad item. On the command line a batch is
 `--notes '<json>'` or `--notes-file PATH` (likewise `--items`, `--ops`,
 `--outline`).
 
-Each tool is also a CLI command without the `libellus_` prefix.
+Each tool is also a CLI command without the `libellus_` prefix. `libellus check`
+is a CLI command too: it reads every file and exits 1 on damage.
+
+The tool definitions are kept short, because a host sends them to the model
+on every turn: `tests/surface.rs` holds the whole `tools/list` result to
+8,500 bytes and the server instructions to under 600. The detail lives here
+and in [SPEC.md](SPEC.md); error messages say what to fix.
 
 ### Run the brief automatically
 
@@ -281,7 +285,7 @@ that is gone.
 ### Tool groups
 
 The `core` tools are always on. The `ledger` tools (`libellus_spend`,
-`libellus_ledger`, `libellus_archive`) and the `board` tools
+`libellus_ledger`) and the `board` tools
 (`libellus_plan`, `libellus_board`) can be switched off with one line in
 the `agent-tools` block of the project's AGENTS.md:
 

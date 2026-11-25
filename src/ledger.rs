@@ -243,7 +243,7 @@ pub fn append(store: &Store, entry: &Entry) -> Result<Recorded, String> {
     };
     if prev_len > MAX_LEDGER_BYTES || prev_len + line.len() as u64 > MAX_LEDGER_BYTES {
         return Err(format!(
-            "not appended: {} is {prev_len} bytes and this line is {} bytes, which would pass the {MAX_LEDGER_BYTES} byte cap. The file was not changed. Archive it with libellus archive --agent {}.",
+            "not appended: {} is {prev_len} bytes and this line is {} bytes, which would pass the {MAX_LEDGER_BYTES} byte cap. The file was not changed. Archive it: libellus_ledger with archive true (libellus ledger --agent {} --archive).",
             path.display(),
             line.len(),
             entry.agent
