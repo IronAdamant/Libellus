@@ -232,7 +232,7 @@ pub struct Lock {
     file: Option<fs::File>,
 }
 
-const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
 const LOCK_STALE: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl Lock {
@@ -271,10 +271,11 @@ impl Lock {
 impl Drop for Lock {
     fn drop(&mut self) {
         // Unlink while the handle is still open. On Unix the name goes away
-        // immediately. On Windows the open allows delete sharing, so the name
-        // is released and a waiter can create a new lock.
+        // immediately. On Windows the open allows delete sharing. Try again
+        // after the handle is closed, in case the first unlink was refused.
         let _ = fs::remove_file(&self.path);
         self.file.take();
+        let _ = fs::remove_file(&self.path);
     }
 }
 
@@ -293,12 +294,13 @@ fn open_lock(path: &Path) -> std::io::Result<fs::File> {
 
 /// Windows can return access-denied (os error 5) instead of already-exists
 /// when two creators race, or while the holder still has the file open.
-fn lock_contended(err: &std::io::Error, path: &Path) -> bool {
-    if err.kind() == std::io::ErrorKind::AlreadyExists {
-        return true;
-    }
-    (err.raw_os_error() == Some(5) || err.kind() == std::io::ErrorKind::PermissionDenied)
-        && path.exists()
+fn lock_contended(err: &std::io::Error, _path: &Path) -> bool {
+    // Windows returns access denied (5) or sharing violation (32) for a race
+    // on CreateFile, sometimes after the other process has already deleted
+    // the name. Treat those as "try again" until the wait expires.
+    err.kind() == std::io::ErrorKind::AlreadyExists
+        || err.kind() == std::io::ErrorKind::PermissionDenied
+        || matches!(err.raw_os_error(), Some(5) | Some(32))
 }
 
 fn lock_path(subject: &Path) -> Result<PathBuf, String> {
