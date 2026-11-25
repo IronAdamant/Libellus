@@ -47,6 +47,8 @@ cargo build --release --locked
 - `src/note.rs` notes. `src/ledger.rs` the ledger. `src/store.rs` store lookup.
 - `src/promote.rs` the Relatum promote step. `src/hook.rs` the hook snippet.
 - `src/cli.rs` the command line. `LIBELLUS_AGENT` fills a required agent.
+- `examples/perf.rs` release timings. `docs/perf/` the recorded numbers.
 - `tests/hostile_input.rs`, `tests/store_integrity.rs`, `tests/cli_and_groups.rs`,
   `tests/note_life.rs`, `tests/ledger_groups.rs`, `tests/promote.rs`,
-  `tests/hook.rs`: the failure modes the design avoids. Keep them passing.
+  `tests/hook.rs`, `tests/agent_ux.rs`: the failure modes the design avoids.
+  Keep them passing.

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.0 (unreleased)
+
+Not tagged. Same on-disk format as 1.0.0.
+
+- `libellus_ls` takes `offset` (default 0). The reply adds `offset` and
+  `returned`. `total` is still the full count. `offset` 0 is the 1.0.0 page.
+- The brief text ends with one `Next:` line. The headings and cost lines are
+  unchanged.
+- A missing note, a duplicate id, and a second resolve name the call that
+  fixes it.
+- Listing and the brief read many notes at once. A spend does not parse the
+  ledger a second time. Numbers are in `docs/perf/`.
+
 ## 1.0.0
 
 First release. A `v*` tag builds `libellus` and `libellus-mcp` for Linux x64,

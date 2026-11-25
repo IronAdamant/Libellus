@@ -2,21 +2,34 @@
 
 ## Project overview
 
-**Libellus** 1.0.0 is a std-only Rust binary (`libellus`, `libellus-mcp`): a private
-notepad and number ledger for each AI agent. It does not call an LLM.
+**Libellus** 1.1.0 is a std-only Rust binary (`libellus`, `libellus-mcp`): a private
+notepad and number ledger for each AI agent. It does not call an LLM. 1.0.0 is
+the tagged release. 1.1.0 is not tagged.
 
 **Guidelines:** No third-party crates. `[dependencies]`, `[dev-dependencies]` and
 `[build-dependencies]` stay empty. No new TODO or FIXME markers in `src/`.
 
 ## Active context
 
-- **Version:** 1.0.0. Aron approved the tag. The release workflow publishes
-  GitHub release archives on `v*`. Not on crates.io or npm.
+- **Version:** 1.1.0 in the tree, not tagged. 1.0.0 is the GitHub release.
+  The release workflow publishes archives on `v*`. Not on crates.io or npm.
 - **Built:** note, get, resolve, ls, brief, promote, spend, ledger; `libellus hook`;
   `LIBELLUS_TOOLS`, `LIBELLUS_DISABLE`, `LIBELLUS_AGENT`.
 - **Not in this tree:** npm packages, an MCP Registry entry.
 
 ## Session log
+
+---
+
+## 1.1.0: faster reads and agent pages
+
+**Date:** 2026-11-25
+
+- Recorded a release baseline, then read note files in parallel and stopped
+  spending from parsing the ledger twice. Before and after are in `docs/perf/`.
+- `libellus_ls` gained `offset`. Errors for a missing note, a duplicate id, and
+  a second resolve name the next call. The brief text ends with a `Next:` line.
+- Not tagged.
 
 ---
 

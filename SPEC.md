@@ -2,8 +2,8 @@
 
 Libellus is a private notepad and number ledger per agent. The files are the
 product. The CLI and the MCP server are conveniences over them, and any agent
-that can read and write files can use the store without either. This is the
-format Libellus 1.0.0 reads and writes.
+that can read and write files can use the store without either. Libellus 1.1.0
+reads and writes the same files as 1.0.0.
 
 ## 1. Layout
 
@@ -141,12 +141,16 @@ types, missing required arguments and values outside an `enum` are errors with
 - `libellus_get` `{agent, id}` returns the note, including `body`, `evidence`
   and `tags`. Missing, corrupt, a symlink, or a mismatched `agent` is an error.
 - `libellus_resolve` `{agent, id, outcome}` returns the updated note.
-- `libellus_ls` `{agent, kind?, status?, limit?, bodies?}` returns
-  `{notes, total}`, oldest first, the newest `limit` kept (default 50).
+- `libellus_ls` `{agent, kind?, status?, limit?, offset?, bodies?}` returns
+  `{notes, total, offset, returned}`. Notes are oldest first within the page.
+  `limit` (default 50) keeps the newest page. `offset` (default 0) skips that
+  many newest notes first. `offset` 0 is the 1.0.0 page. `total` is the full
+  count, not the page size.
 - `libellus_brief` `{agent, max_items?, host?}` returns `open_questions`,
   `recent_decisions`, `dead_ends`, `costs` and `text`. The CLI prints `text`.
   `host: cursor` makes the CLI print `{"additional_context": "<text>"}` instead.
-  The default text is unchanged.
+  The text keeps the 1.0.0 headings and cost lines, and ends with one `Next:`
+  line naming resolve, spend, and promote.
 - `libellus_promote` `{agent, id, scope}` returns `{id, promoted, relatum_kind, path}`.
 - `libellus_spend` `{agent, task, step?, model?, tokens_in?, tokens_out?,
   cost_micro_usd?, note?}` (at least one number) returns the task and agent

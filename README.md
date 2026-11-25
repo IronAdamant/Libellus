@@ -108,8 +108,8 @@ project. The same tools are CLI commands without the `libellus_` prefix.
 | `libellus_note` | core | Write a note. Never overwrites an existing one. |
 | `libellus_get` | core | Read one note by id, including its body. |
 | `libellus_resolve` | core | Mark a note resolved and append a one-line outcome. |
-| `libellus_ls` | core | List your notes, optionally with bodies. |
-| `libellus_brief` | core | The compaction payload. |
+| `libellus_ls` | core | List your notes. `offset` turns the page. `total` is the full count. |
+| `libellus_brief` | core | The compaction payload. The text ends with a `Next:` line. |
 | `libellus_promote` | core | Write the note into Relatum and record that id. |
 | `libellus_spend` | ledger | Record tokens and cost for a step. |
 | `libellus_ledger` | ledger | Totals, optionally by task, step, or every agent. |
@@ -184,6 +184,9 @@ cargo build --release --locked
 
 `Cargo.toml` has no dependencies. `tests/zero_deps.rs` checks that, and
 `Cargo.lock` holds one package.
+
+`examples/perf.rs` times the hot paths. The 1.0.0 numbers and the later run
+are in [docs/perf/](docs/perf/).
 
 ## Licence
 
