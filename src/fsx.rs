@@ -336,7 +336,10 @@ pub struct Lock {
 }
 
 const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
-const LOCK_STALE: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const LOCK_STALE: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long a lock may exist before its pid line is finished. A writer killed
+/// in that window used to block other writers for `LOCK_STALE`.
+pub(crate) const LOCK_BARE: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Lock {
     pub fn acquire(subject: &Path) -> Result<Lock, String> {
@@ -415,7 +418,7 @@ fn lock_path(subject: &Path) -> Result<PathBuf, String> {
     Ok(parent.join(format!(".{name}.lock")))
 }
 
-fn lock_is_stale(path: &Path) -> bool {
+pub(crate) fn lock_is_stale(path: &Path) -> bool {
     // Missing means the holder already unlinked it. Do not treat that as
     // stale: the caller would otherwise delete a lock created a moment later.
     let Ok(meta) = fs::symlink_metadata(path) else {
@@ -424,35 +427,36 @@ fn lock_is_stale(path: &Path) -> bool {
     if meta.file_type().is_symlink() {
         return true;
     }
-    let aged = meta
+    let age = meta.modified().ok().and_then(|t| t.elapsed().ok());
+    let future = meta
         .modified()
         .ok()
-        .and_then(|t| t.elapsed().ok())
-        .is_some_and(|age| age > LOCK_STALE);
-    if aged {
+        .and_then(|t| t.duration_since(std::time::SystemTime::now()).ok());
+    if age.is_some_and(|a| a > LOCK_STALE) {
         return true;
     }
-    // A pid line that is still being written does not end in a newline.
-    // A finished line naming a dead process is stale at once, where `ps` can
-    // say so. Otherwise wait until the age above.
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    if !text.ends_with('\n') {
-        return false;
+    let text = fs::read_to_string(path).unwrap_or_default();
+    if text.ends_with('\n') {
+        let Some(pid) = lock_pid_text(&text) else {
+            // A finished line that is not a pid ("held", for example) is a
+            // live lock until it is old enough to be stale.
+            return false;
+        };
+        if pid_alive(Some(pid)) != Some(false) {
+            return false;
+        }
+        // The name may have been replaced since the first read. Delete only
+        // when the same finished pid line is still there and still dead.
+        let Ok(again) = fs::read_to_string(path) else {
+            return false;
+        };
+        return again == text && pid_alive(Some(pid)) == Some(false);
     }
-    let Some(pid) = lock_pid_text(&text) else {
-        return false;
-    };
-    if pid_alive(Some(pid)) != Some(false) {
-        return false;
-    }
-    // The name may have been replaced since the first read. Delete only when
-    // the same finished pid line is still there and still dead.
-    let Ok(again) = fs::read_to_string(path) else {
-        return false;
-    };
-    again == text && pid_alive(Some(pid)) == Some(false)
+    // No finished pid line. The holder writes that line immediately after
+    // creating the file. A kill before the write leaves this shape. A future
+    // mtime cannot be aged, so it does not get to block for an hour.
+    age.is_some_and(|a| a > LOCK_BARE)
+        || future.is_some_and(|d| d > std::time::Duration::from_secs(2))
 }
 
 fn lock_pid_text(text: &str) -> Option<u32> {
@@ -461,7 +465,7 @@ fn lock_pid_text(text: &str) -> Option<u32> {
 }
 
 /// `Some(false)` when this platform can see that `pid` is not running.
-fn pid_alive(pid: Option<u32>) -> Option<bool> {
+pub(crate) fn pid_alive(pid: Option<u32>) -> Option<bool> {
     let pid = pid?;
     #[cfg(unix)]
     {

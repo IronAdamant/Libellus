@@ -2,8 +2,9 @@
 
 Libellus is a private notepad and number ledger per agent. The files are the
 product. The CLI and the MCP server are conveniences over them, and any agent
-that can read and write files can use the store without either. Libellus 1.1.2
-reads and writes the same files as 1.0.0.
+that can read and write files can use the store without either. Libellus 1.2.0
+reads stores written by 1.0.0 and 1.1.2. Notes it writes add `seq`. A 1.1.2
+binary rejects that key.
 
 ## 1. Layout
 
@@ -50,6 +51,8 @@ Frontmatter is a flat subset of YAML (`key: value`, lists written `[a, b]`).
 | `summary` | yes | One line, up to 200 characters, no leading or trailing space |
 | `agent` | yes | The owning agent. A file whose agent is not the caller is an error |
 | `created` | yes | UTC, `YYYY-MM-DDTHH:MM:SSZ`. Resolve and promote leave it unchanged |
+| `seq` | no | Whole number. New notes get the next value for that agent. Older notes omit it |
+| `superseded` | no | `true` when the note was marked replaced. Absent means it was not |
 | `evidence` | no | Pointers, each `tool:reference` (see below) |
 | `tags` | no | Slugs |
 | `promoted` | no | Relatum note id written by `libellus_promote` |
@@ -67,6 +70,12 @@ does not match the folder is skipped by `ls` and `brief` with a warning, and
 or two slugs, and anything in the notes folder that is not a regular file
 (a fifo, for example), is skipped the same way. A symlink is still an error.
 
+Notes are ordered by `seq` when they have one. Notes without `seq` are
+ordered by `created`, then by id. Inside one second, a note with `seq` is
+newer than a note without it. `seq` comes from `agents/<agent>/seq`. A missing
+counter starts at the highest `seq` already stored, or 0. A damaged counter
+is an error and is not reset. Resolve and promote leave `seq` unchanged.
+
 `libellus_resolve` sets `status` to `resolved` and appends one line to the
 body, keeping the old body:
 
@@ -76,7 +85,10 @@ Outcome: No, GET only.
 
 The outcome is one line, at most 200 characters, with no leading or trailing
 space. A note that is already resolved is an error, and the file is not
-changed. The replacement is atomic.
+changed, unless the call passes `supersede` or the outcome starts with
+`SUPERSEDED:` or `REVERSED:`. That call sets `superseded: true`, appends the
+outcome, and is allowed on a note that is already resolved. The replacement
+is atomic.
 
 Evidence pointers: `<tool>:<reference>`, the tool a slug, the reference up to 200
 characters with no whitespace, commas or brackets. Libellus does not check that
@@ -96,8 +108,9 @@ One JSON object per line, appended, never rewritten:
 `step`, `model` and `note` are optional. The three numbers are whole numbers
 (unsigned, up to 64 bits); `cost_micro_usd` is millionths of a US dollar. Sums use
 checked arithmetic. A spend checks the new total before it appends, and does
-not append when the total would overflow. It reads the ledger once, under the
-lock, and the returned count includes the line just written. A line that is
+not append when the total would overflow. Under the lock it uses
+`ledger.meta` when that cache still matches the file, and otherwise reads
+the ledger once. The returned count includes the line just written. A line that is
 not JSON, or that has an unknown field, fails every read and every append.
 A line whose `agent` is not the folder, whose `task` or `step` is not a slug,
 or whose `ts` is not `YYYY-MM-DDTHH:MM:SSZ` is left out of the totals.
@@ -106,13 +119,40 @@ the torn line is not counted, `check` names it and says to finish or delete
 it, and `spend` will not append until that is done. A symlink ledger, or a
 ledger that is not a regular file, is refused for both read and append.
 A ledger over 32 MiB, or a line over 64 KiB, is an error and is not read.
-A damaged ledger is not repaired. A ledger that is intact but whose running
+`spend` refuses before an append would pass 32 MiB, and the file is unchanged.
+`libellus archive` renames `ledger.jsonl` to
+`archive/ledger-YYYYMMDDTHHMMSSZ.jsonl` (digits, `T`, and `Z` only, so the
+name is safe on Windows) and starts a fresh ledger. The old file is kept and
+is not included in later totals. `check` reads archives and does not apply
+the 32 MiB cap to them. A damaged archive fails `check`.
+
+`brief` still returns the notes when a ledger cannot be read (over the cap,
+a line over 64 KiB, a fifo, a symlink, or a corrupt line). Costs are then
+empty and `ledger_error` names the file. `ledger`, `spend`, and `check` still
+fail on that file. A damaged ledger is not repaired.
+
+A failed `spend` write truncates its own partial line back off the file. A
+kill during the write can still leave a torn line. The next `spend` will not
+append until that line is finished or deleted. `brief` keeps working and
+names the torn line.
+
+`spend` keeps totals in `ledger.meta` beside the ledger. It uses that cache
+only when the file length and the last line still match, so a later spend
+does not parse the whole file. Per-task totals are kept for up to 64 tasks.
+With more tasks, `spend` still reads the ledger to total that one task, and
+it does not rewrite a row for every task. The cache is not the ledger. A hand
+edit that keeps the same length and the same last line is not seen by `spend`
+until `brief`, `ledger`, or `check` reads the file and rewrites the cache. A
+damaged cache is ignored. A ledger that is intact but whose running
 total overflows is reported by `ledger` and `brief` as `ledger_error` with the
 line number; totals stop before that line. `check` fails on that ledger.
 
 `libellus_ledger` returns `agents`, `entries`, `tokens_in`, `tokens_out` and
-`cost_micro_usd`. With no `task`, it also returns `by_task`. With no `step`,
-it also returns `by_step`. A spend with no step is keyed `""` in `by_step`.
+`cost_micro_usd`. With no `task`, it also returns `by_task`, every task,
+sorted by name. With no `step`, it also returns `by_step`. A spend with no
+step is keyed `""` in `by_step`. The brief's `by_task` is not this full map:
+it keeps the newest tasks, up to `max_items`, and reports how many were left
+out. Grouping walks each entry once.
 With no `agent`, it sums every agent folder and names those agents. `task` and
 `step` filters must be slugs. `LIBELLUS_AGENT` does not fill `agent` here:
 omitting it means every agent.
@@ -162,17 +202,28 @@ types, missing required arguments and values outside an `enum` are errors with
   returns `{id, kind, status}`. Without `id`, one is made from the summary.
 - `libellus_get` `{agent, id}` returns the note, including `body`, `evidence`
   and `tags`. Missing, corrupt, a symlink, or a mismatched `agent` is an error.
-- `libellus_resolve` `{agent, id, outcome}` returns the updated note.
+- `libellus_resolve` `{agent, id, outcome, supersede?}` returns the updated note.
+  `supersede`, or an outcome that starts with `SUPERSEDED:` or `REVERSED:`,
+  sets `superseded` and is allowed when the note is already resolved.
 - `libellus_ls` `{agent, kind?, status?, limit?, offset?, before_id?, bodies?}`
   returns `{notes, total, offset, returned, truncated, next_offset, next_before_id}`.
   Notes are oldest first within the page. `limit` (default 50, minimum 1)
   keeps the newest page. `offset` 0 is the 1.0.0 page. `before_id` is the
-  stable cursor: only notes older than that id, so a note written between
+  stable cursor: only notes older in `seq` order (or `created`, then id), so a note written between
   pages is not listed twice. `truncated` is true when another page remains.
   `next_offset` and `next_before_id` are null when it does not. Prefer
   `next_before_id` for the next call. `total` is the full count.
 - `libellus_brief` `{agent, max_items?}` returns `open_questions`,
-  `recent_decisions`, `dead_ends`, `costs` and `text`. The CLI prints `text`.
+  `open_questions_total`, `recent_decisions`, `replaced_decisions`,
+  `dead_ends`, `recent_findings`, `context`, `costs`, `truncated` and `text`.
+  `max_items` (default 5, at most 50) caps every section, including open
+  questions and task costs. Items are newest first. `text` is at most 8192
+  bytes and says when it was cut. `context` is the newest context note, with
+  the body cut at 500 characters. Replaced decisions are listed apart from
+  current ones, with `(replaced)` in the text. Task costs are the newest
+  spends, not the alphabetical prefix. A ledger read error sets `ledger_error`
+  and does not drop the notes. Callers from 1.0.0 still find the old fields.
+  The CLI prints `text`.
   `--host cursor` is a CLI flag only (it is not an MCP argument) and prints
   `{"additional_context": "<text>"}`. The text keeps the 1.0.0 headings and
   cost lines. A `Next:` line is added only when a question is still open or a
@@ -183,13 +234,18 @@ types, missing required arguments and values outside an `enum` are errors with
   damaged, a note is over 1 MiB, a ledger total overflows, a note's `agent`
   field does not match its folder, a note id cannot be opened, a ledger line
   was left out of the totals, a ledger ends in a partial line, or a stale
-  lock is left behind. The stale-lock error says to remove that file if no
-  libellus process is using it.
+  lock could not be removed. `check` first deletes stale locks and temp files
+  whose writer is gone. A lock with no finished pid line is stale after one
+  second. A finished line that names a dead process is stale at once. A fresh
+  lock that is not a pid line is left in place. The success JSON lists
+  `removed`.
 - `libellus_promote` `{agent, id, scope}` returns `{id, promoted, relatum_kind, path}`.
 - `libellus_spend` `{agent, task, step?, model?, tokens_in?, tokens_out?,
   cost_micro_usd?, note?}` (at least one number) returns the task and agent
   totals.
 - `libellus_ledger` `{agent?, task?, step?}` returns the totals described above.
+- `libellus_archive` `{agent}` moves that agent's ledger into `archive/` and
+  starts a fresh file. It is in the ledger group.
 
 `LIBELLUS_AGENT`, when set and non-empty, fills a required `agent` that the
 caller omitted. An explicit `agent` wins.

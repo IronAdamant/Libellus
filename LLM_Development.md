@@ -2,7 +2,7 @@
 
 ## Project overview
 
-**Libellus** 1.1.2 is a std-only Rust binary (`libellus`, `libellus-mcp`): a private
+**Libellus** 1.2.0 is a std-only Rust binary (`libellus`, `libellus-mcp`): a private
 notepad and number ledger for each AI agent. It does not call an LLM. 1.0.0,
 1.1.0 and 1.1.1 are tagged releases.
 
@@ -11,13 +11,33 @@ notepad and number ledger for each AI agent. It does not call an LLM. 1.0.0,
 
 ## Active context
 
-- **Version:** 1.1.2 in the tree. 1.0.0, 1.1.0 and 1.1.1 are GitHub releases.
+- **Version:** 1.2.0 in the tree. 1.0.0, 1.1.0, 1.1.1 and 1.1.2 are GitHub releases.
   The release workflow publishes archives on `v*`. Not on crates.io or npm.
 - **Built:** note, get, resolve, ls, brief, promote, spend, ledger; `libellus hook`;
   `LIBELLUS_TOOLS`, `LIBELLUS_DISABLE`, `LIBELLUS_AGENT`.
 - **Not in this tree:** npm packages, an MCP Registry entry.
 
 ## Session log
+
+---
+
+## 1.2.0: fourth stress test
+
+**Date:** 2026-11-25
+
+- Fixed the Libellus findings from the fourth stress test. Adsertio findings
+  were left alone. Ordering uses `seq`. The brief is capped, newest first,
+  and names the latest context note and replaced decisions. `spend` stops at
+  the 32 MiB cap. `brief` degrades when the ledger cannot be read.
+  `libellus archive` keeps a full ledger. Grouping is one pass. Stale locks
+  and dead temp files are removed. A failed spend truncates its own partial
+  line. `ledger.meta` skips a repeat parse when the file still matches.
+- Before and after timings are in `docs/perf/1.2.0.md`. On this 4 CPU
+  machine a warm spend at 100,000 entries fell from 274 ms to 3.9 ms.
+  A brief over 100,000 tasks fell from 13.1 s to 227 ms. The per-task cache
+  stops at 64 tasks: caching all 100,000 made one spend take 26.9 s, which
+  was worse than 1.1.2, so that path was rejected. A same-length edit that
+  keeps the last line is corrected by `brief`, `ledger` or `check`.
 
 ---
 

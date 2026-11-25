@@ -274,6 +274,8 @@ mod tests {
             evidence: vec![],
             tags: vec![],
             promoted: None,
+            seq: None,
+            superseded: false,
             body: String::new(),
         };
         assert!(relatum_kind(&note).is_err());

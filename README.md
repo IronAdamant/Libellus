@@ -4,8 +4,9 @@
 
 Libellus is a private notepad and a number ledger for one AI agent. The notes
 and the numbers live in plain files that agent owns. After its context is
-compacted, one command returns a short brief: open questions, recent
-decisions, dead ends, and what the run has cost.
+compacted, one command returns a short brief: open questions, the latest
+state, recent decisions, replaced decisions, dead ends, and what the run
+has cost.
 
 ## Why it exists
 
@@ -64,6 +65,7 @@ libellus resolve --agent main --id does-retry-apply-to-post --outcome "No, GET o
 libellus get --agent main --id does-retry-apply-to-post
 libellus spend --agent main --task retry --tokens_in 100 --tokens_out 20 --cost_micro_usd 1000
 libellus ledger --agent main
+libellus archive --agent main
 libellus brief --agent main
 ```
 
@@ -109,13 +111,14 @@ project. The same tools are CLI commands without the `libellus_` prefix.
 |---|---|---|
 | `libellus_note` | core | Write a note. Never overwrites an existing one. |
 | `libellus_get` | core | Read one note by id, including its body. |
-| `libellus_resolve` | core | Mark a note resolved and append a one-line outcome. |
+| `libellus_resolve` | core | Mark a note resolved and append a one-line outcome. `supersede`, or an outcome starting `SUPERSEDED:` or `REVERSED:`, marks it replaced. |
 | `libellus_ls` | core | List your notes. `before_id` is the stable page cursor. `limit` is at least 1. |
-| `libellus_brief` | core | The compaction payload. `Next:` is added only when there is something to do. |
-| `libellus_check` | core | Read every note and ledger. Fails on damage, overflow, or a mismatched agent. |
+| `libellus_brief` | core | The compaction payload. Capped, newest first, and it still returns notes when the ledger cannot be read. |
+| `libellus_check` | core | Read every note and ledger. Removes stale locks and leftover temp files. Fails on damage. |
 | `libellus_promote` | core | Write the note into Relatum and record that id. |
-| `libellus_spend` | ledger | Record tokens and cost for a step. |
+| `libellus_spend` | ledger | Record tokens and cost for a step. Refuses before the ledger would pass 32 MiB. |
 | `libellus_ledger` | ledger | Totals, optionally by task, step, or every agent. |
+| `libellus_archive` | ledger | Move the ledger into `archive/` and start a fresh one. The old file is kept. |
 
 `libellus check` reads every note and ledger and fails on any damage.
 `libellus hook --agent NAME [--host cursor|claude|generic]` prints a snippet
@@ -171,8 +174,9 @@ These failure modes are covered by tests in `tests/`:
 - Writes land whole through a temp file that is removed on failure. A new
   note is created with a hard link, so it cannot overwrite another. Resolve
   and promote update an existing note only by replacing that file.
-- A second resolve is an error and does not append again. A second promote is
-  an error and does not write a second Relatum note.
+- A second resolve is an error and does not append again, unless it marks the
+  note replaced. A second promote is an error and does not write a second
+  Relatum note.
 - A mistake in the `agent-tools` line, or in `LIBELLUS_TOOLS` /
   `LIBELLUS_DISABLE`, falls back to the core tools and says why.
 
@@ -190,6 +194,19 @@ cargo build --release --locked
 
 `examples/perf.rs` times the hot paths. The 1.0.0 numbers and the later run
 are in [docs/perf/](docs/perf/).
+
+## Performance, 1.2.0
+
+Measured on one 4 CPU Linux machine, release build, same box for 1.1.2 and
+1.2.0. The full tables and the limits are in
+[docs/perf/1.2.0.md](docs/perf/1.2.0.md).
+
+| Case | 1.1.2 | 1.2.0 | Cause |
+|---|---:|---:|---|
+| Warm spend, 100,000 entries, one task | 274.1 ms | 3.9 ms | `ledger.meta` cache. The cold read of that file is still 183.3 ms. |
+| Brief, 100,000 distinct tasks | 13.1 s | 227 ms | One-pass task grouping |
+| Ledger, 100,000 distinct tasks | 13.5 s | 336 ms | One-pass task grouping |
+| Brief text, 100 open questions, `--max_items 3` | 19,001 bytes | 927 bytes | `max_items` caps the sections |
 
 ## Licence
 
