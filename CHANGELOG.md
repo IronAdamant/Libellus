@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.4.1
+
+Windows: a write no longer fails with `cannot replace <path>: Access is
+denied. (os error 5)` when a virus scanner or the search indexer has just
+opened the file. They open a freshly written file without sharing delete
+access, and a replace over it fails until they let go. Every rename Libellus
+does (note, ledger and board writes, ledger archive, plan archive) now
+retries for up to 2 seconds while Windows reports the file busy (error 5 or
+32), then reports the error as before. Seen with Windows Defender on the
+8-writer stress test (`many_writers_lose_nothing_and_seq_stays_unique`),
+which failed about one run in two; GitHub's Windows runners do not scan, so
+CI passed. Linux and macOS are unchanged. Test:
+`a_replace_waits_while_another_process_briefly_holds_the_file`.
+
 ## 1.4.0
 
 Operating-system file locks. A lock was a file made with `create_new` that

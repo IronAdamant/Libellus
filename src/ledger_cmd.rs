@@ -105,7 +105,7 @@ pub fn archive(agent: &str) -> Result<Value, String> {
             return Err("could not pick an archive name".into());
         }
     }
-    std::fs::rename(&path, &dest).map_err(|e| {
+    fsx::rename(&path, &dest).map_err(|e| {
         format!(
             "cannot archive {} to {}: {e}. The ledger was not changed.",
             path.display(),
@@ -115,7 +115,7 @@ pub fn archive(agent: &str) -> Result<Value, String> {
     let meta = path.with_file_name("ledger.meta");
     if matches!(fsx::file_kind(&meta)?, fsx::FileKind::Regular { .. }) {
         let meta_dest = dest.with_extension("meta");
-        let _ = std::fs::rename(&meta, &meta_dest);
+        let _ = fsx::rename(&meta, &meta_dest);
     }
     Ok(Value::obj(vec![
         ("agent", Value::str(agent)),

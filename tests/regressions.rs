@@ -362,3 +362,28 @@ fn list_pages_with_a_stable_cursor_and_check_is_a_tool() {
         checked[0]
     );
 }
+
+/// Windows: a virus scanner or indexer that opens a just-written note without
+/// sharing delete access made the next replace of it fail with "Access is
+/// denied" (os error 5). The replace now waits for it to let go.
+#[cfg(windows)]
+#[test]
+fn a_replace_waits_while_another_process_briefly_holds_the_file() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = project("reg-busy-replace");
+    let dest = dir.join("held.md");
+    fs::write(&dest, "old").unwrap();
+    // FILE_SHARE_READ only: no FILE_SHARE_DELETE, as a scanner opens it.
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&dest)
+        .unwrap();
+    let letter = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        drop(held);
+    });
+    libellus::fsx::write_atomic(&dest, b"new", true).unwrap();
+    letter.join().unwrap();
+    assert_eq!(fs::read_to_string(&dest).unwrap(), "new");
+}
