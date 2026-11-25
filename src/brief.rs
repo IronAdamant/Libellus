@@ -29,32 +29,33 @@ pub fn run(a: &Args) -> Result<Value, String> {
     let mut truncated = requested > MAX_ITEMS;
     let loaded = note::load_all(&store, agent)?;
     let notes = loaded.notes;
-    let (totals, tasks, entry_count, ledger_error, ledger_warnings) = match ledger::load_report(
-        &store, agent,
-    ) {
-        Ok(summed) => {
-            let err = summed.overflow_line.map(|line| {
-                    format!(
-                        "ledger totals overflowed a 64-bit number at line {line}. Totals above stop before that line."
-                    )
-                });
-            let tasks = ledger::by_task_recent(&summed.entries)?;
-            (
-                summed.totals,
-                tasks,
-                summed.entries.len(),
-                err.map(|text| cap_hint(text, agent)),
-                summed.warnings,
-            )
-        }
-        Err(err) => (
-            Totals::default(),
-            Vec::new(),
-            0,
-            Some(cap_hint(err, agent)),
-            Vec::new(),
-        ),
-    };
+    let (totals, tasks, entry_count, ledger_error, ledger_warnings) =
+        match ledger::load_report(&store, agent) {
+            Ok(summed) => {
+                let err = match (summed.overflow_line, store.ledger_path(agent)) {
+                    (Some(line), Ok(path)) => Some(format!(
+                        "{}. Totals above stop before that line.",
+                        ledger::overflow_text(&path, line)
+                    )),
+                    _ => None,
+                };
+                let tasks = ledger::by_task_recent(&summed.entries)?;
+                (
+                    summed.totals,
+                    tasks,
+                    summed.entries.len(),
+                    err.map(|text| cap_hint(text, agent)),
+                    summed.warnings,
+                )
+            }
+            Err(err) => (
+                Totals::default(),
+                Vec::new(),
+                0,
+                Some(cap_hint(err, agent)),
+                Vec::new(),
+            ),
+        };
 
     let (open, open_total) = newest(&notes, |n| n.kind == "question" && n.status == "open", max);
     let (decisions, decision_total) =

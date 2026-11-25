@@ -15,11 +15,17 @@ binary rejects that key.
 ```
 
 - The store is the nearest `.libellus/` walking up from the working directory,
-  or the folder named by `$LIBELLUS_DIR`. `libellus init` creates it. A folder
+  or the folder named by `$LIBELLUS_DIR`. An empty `LIBELLUS_DIR` is treated
+  as unset. `libellus init` creates it. A folder
   set as `LIBELLUS_DIR` with no `agents` directory is not a store: calls fail
   and say to run `libellus init`. No tool creates a store by accident.
 - `<agent>` and every id segment are slugs: `[a-z0-9][a-z0-9-]*`, at most 64
-  bytes. An id has at most two segments (`retry/post-question`).
+  bytes. An id has at most two segments (`retry/post-question`). A Windows
+  device name (`con`, `prn`, `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`)
+  is refused as an agent name or id segment on every platform, so a store
+  stays portable. A note file with such a name is skipped by `ls` and `brief`
+  with a warning. An id made from a summary that would be one gets `-note`
+  added (`con-note`).
 - On Unix the folders are created mode 0700 and files 0600.
 - A path component that is a symlink is refused, including `ledger.jsonl`,
   `notes/` and `archive/`. A `.libellus` found while walking up that is a
@@ -45,6 +51,8 @@ The decision note says GET only, but the client retries every method.
 ```
 
 Frontmatter is a flat subset of YAML (`key: value`, lists written `[a, b]`).
+A note saved with CRLF line endings is read as if it had LF. Reading does not
+rewrite the file; the next resolve or promote writes it with LF.
 
 | Field | Required | Meaning |
 |---|---|---|
@@ -150,7 +158,10 @@ edit that keeps the same length and the same last line is not seen by `spend`
 until `brief`, `ledger`, or `check` reads the file and rewrites the cache. A
 damaged cache is ignored. A ledger that is intact but whose running
 total overflows is reported by `ledger` and `brief` as `ledger_error` with the
-line number; totals stop before that line. `check` fails on that ledger.
+line number in the file (left-out and torn lines count); totals stop before
+that line. `ledger` keeps a left-out line warning beside the overflow,
+joined with `; `. `check` and `spend` name the same line. `check` fails on
+that ledger.
 
 `libellus_ledger` returns `agents`, `entries`, `tokens_in`, `tokens_out` and
 `cost_micro_usd`. With no `task`, it also returns `by_task`, every task,
@@ -170,6 +181,9 @@ omitting it means every agent.
 The Relatum store is `$SWARMNOTES_DIR` when that is set and non-empty, otherwise
 the nearest `.swarmnotes/` walking up from the working directory. If neither
 exists, the call errors and tells the caller to run `relatum init`.
+`SWARMNOTES_DIR` is the host's explicit choice and may lead through a
+symlink. A `.swarmnotes` found by walking that is a symlink or a file is
+refused, and the walk does not carry on to a parent store.
 
 Kind mapping:
 
@@ -184,7 +198,8 @@ Kind mapping:
 An open question is refused. Other kinds may be promoted while open.
 
 The new id is `<scope>/<libellus-id>`. Each segment matches Relatum's rule
-`_?[a-z0-9][a-z0-9-]*`. `..`, an absolute path, and a symlink are refused.
+`_?[a-z0-9][a-z0-9-]*`. `..`, an absolute path, a symlink inside the store,
+and a Windows device name as a scope segment are refused.
 The file is markdown with Relatum frontmatter (`kind`, `summary`, `author`,
 `updated` as `YYYY-MM-DD`, `tags`), created with a hard link so an existing
 file is never replaced. `author` is the agent name. The body is the Libellus
@@ -218,11 +233,20 @@ types, missing required arguments and values outside an `enum` are errors with
 - `libellus_ls` `{agent, kind?, status?, limit?, offset?, before_id?, bodies?}`
   returns `{notes, total, offset, returned, truncated, next_offset, next_before_id}`.
   Notes are oldest first within the page. `limit` (default 50, minimum 1)
-  keeps the newest page. `offset` 0 is the 1.0.0 page. `before_id` is the
-  stable cursor: only notes older in `seq` order (or `created`, then id), so a note written between
-  pages is not listed twice. `truncated` is true when another page remains.
-  `next_offset` and `next_before_id` are null when it does not. Prefer
-  `next_before_id` for the next call. `total` is the full count.
+  keeps the newest page. `offset` 0 is the 1.0.0 page. `offset` counts back
+  from the newest note that matches `kind` and `status`, or from the cursor
+  when `before_id` is given. `before_id` is the stable cursor: only notes
+  older in list order (`seq`, or `created` then id), so a note written
+  between pages is not listed twice. The cursor is placed by that order, not
+  by finding the note in the filtered list, so it still works after the note
+  is resolved, filtered out, or deleted. `next_before_id` is
+  `<id>@<created>@<seq>` (or `<id>@<created>` for a note without `seq`); a
+  plain note id is also accepted while that note exists. `truncated` is true
+  when another page remains. `next_offset` and `next_before_id` are null
+  when it does not. `next_offset` is absolute: the `offset` to pass without
+  `before_id` for the next older page, also on a page reached with
+  `before_id`. Prefer `next_before_id` for the next call. `total` is the
+  count that matches `kind` and `status`.
 - `libellus_brief` `{agent, max_items?}` returns `open_questions`,
   `open_questions_total`, `recent_decisions`, `replaced_decisions`,
   `dead_ends`, `recent_findings`, `context`, `costs`, `truncated` and `text`.
@@ -251,7 +275,9 @@ types, missing required arguments and values outside an `enum` are errors with
   `.<name>.lock.break` guard removes a stale lock, and it judges the lock
   again while holding the guard, so a lock taken a moment later is never
   removed. A holder deletes its lock only while the file still holds the line
-  it wrote. The success JSON lists
+  it wrote. On Unix a pid is checked with `kill(pid, 0)`: EPERM is alive,
+  ESRCH is dead. `ps` is not run. On Windows a pid cannot be checked and a
+  lock is judged by its age. The success JSON lists
   `removed`.
 - `libellus_promote` `{agent, id, scope}` returns `{id, promoted, relatum_kind, path}`.
 - `libellus_spend` `{agent, task, step?, model?, tokens_in?, tokens_out?,
@@ -277,7 +303,10 @@ libellus: tools core, ledger
 If `LIBELLUS_TOOLS` or `LIBELLUS_DISABLE` is set to a non-empty value, that
 pair replaces the file line. `LIBELLUS_TOOLS` is the allowlist and
 `LIBELLUS_DISABLE` is applied after it. Group names are comma-separated and
-case is ignored. An unknown group, an empty list, or disabling `core` falls
+case is ignored, in the file line too (prefix, verb and group names). With no
+store yet, the AGENTS.md read is in the parent of `LIBELLUS_DIR` when that is
+set, else the nearest folder walking up from the working directory that has
+an AGENTS.md. An unknown group, an empty list, or disabling `core` falls
 back to the core tools only and says why in `initialize` and in `tools/list`.
 
 `libellus hook` is a CLI command, not an MCP tool. It prints a snippet whose
@@ -286,7 +315,12 @@ compaction. `--host` is `generic` (the default), `claude`, or `cursor`. The
 claude snippet is a SessionStart hook whose plain stdout is added to the
 session, including after compaction (`compact`). The cursor snippet is a
 sessionStart hook that prints `additional_context`. Cursor's preCompact hook
-cannot put text back into the model.
+cannot put text back into the model. `hook` reads its flags with the same
+rules as every other command: `--name=value` works, and a flag given twice
+is an error.
+
+`init`, `check`, `mcp`, `serve-mcp`, `help` and `--version` take no arguments.
+An extra argument is a usage error (exit 2).
 
 ## 6. Protocol behaviour
 
@@ -300,6 +334,8 @@ Newline-delimited JSON-RPC 2.0 on stdio.
 | `id` that is not a string, number or null | `-32600` |
 | Unknown method with an id | `-32601` |
 | Unknown method without an id, or `notifications/*` | no reply |
+| A response from the client (`result` or `error`, no `method`) | no reply |
+| An id with no `method`, `result` or `error` | `-32600` |
 | `tools/call` for an unknown tool | `-32602` |
 | A tool failure | a result with `isError: true` |
 | A tool that panics | a result with `isError: true`; the server continues |

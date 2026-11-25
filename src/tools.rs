@@ -82,8 +82,8 @@ pub static TOOLS: &[Tool] = &[
             Param { name: "kind", kind: Kind::Str, required: false, doc: "Only this kind.", choices: note::KINDS },
             Param { name: "status", kind: Kind::Str, required: false, doc: "Only this status.", choices: note::STATUSES },
             Param { name: "limit", kind: Kind::UInt, required: false, doc: "Most notes to return, newest kept. Default 50. Minimum 1.", choices: &[] },
-            Param { name: "offset", kind: Kind::UInt, required: false, doc: "Skip this many of the newest notes before applying limit. Default 0. Prefer before_id: a note written between pages can show up twice with offset.", choices: &[] },
-            Param { name: "before_id", kind: Kind::Str, required: false, doc: "Stable cursor: only notes older than this id (by seq, or by created then id). Use next_before_id from the previous page.", choices: &[] },
+            Param { name: "offset", kind: Kind::UInt, required: false, doc: "Skip this many of the newest matching notes (newer than before_id, when given) before applying limit. Default 0. next_offset is absolute: pass it without before_id. Prefer before_id: a note written between pages can show up twice with offset.", choices: &[] },
+            Param { name: "before_id", kind: Kind::Str, required: false, doc: "Stable cursor: only notes older than this one in list order (seq, or created then id). Pass next_before_id from the previous page; it still works after that note is resolved or deleted. A note id is also accepted while the note exists.", choices: &[] },
             Param { name: "bodies", kind: Kind::Bool, required: false, doc: "Include each body (cut at 4000 characters).", choices: &[] },
         ],
         run: note_ls,
@@ -257,8 +257,11 @@ fn candidate_id(summary: &str, n: u32) -> String {
         .join("-");
     slug.truncate(48);
     let slug = slug.trim_matches('-').to_string();
+    // A summary like "Con" must not become a Windows device name.
     let slug = if slug.is_empty() {
         "note".to_string()
+    } else if fsx::reserved_name(&slug) {
+        format!("{slug}-note")
     } else {
         slug
     };
@@ -378,44 +381,41 @@ fn note_value(n: &Note, body: bool) -> Value {
 fn note_ls(a: &Args) -> Result<Value, String> {
     let store = Store::open()?;
     let loaded = note::load_all(&store, a.str("agent").unwrap_or_default())?;
-    let mut notes = loaded.notes;
-    notes.retain(|n| {
+    let all = loaded.notes;
+    let keep = |n: &Note| {
         a.str("kind").is_none_or(|k| n.kind == k) && a.str("status").is_none_or(|s| n.status == s)
-    });
-    let total = notes.len();
+    };
+    // Each kept note with its place in the full list.
+    let filtered: Vec<(usize, &Note)> = all.iter().enumerate().filter(|(_, n)| keep(n)).collect();
+    let total = filtered.len();
     let limit = a.uint("limit").unwrap_or(50) as usize;
     let offset = a.uint("offset").unwrap_or(0) as usize;
-    if let Some(id) = a.str("before_id") {
-        let at = notes.iter().position(|n| n.id == id).ok_or_else(|| {
-            format!("before_id \"{id}\" is not in this list. Call libellus_ls without before_id.")
-        })?;
-        // The list is already oldest first, so older is everything before it.
-        notes.truncate(at);
-    }
+    // before_id is the stable cursor. It is placed by the list's own order
+    // (seq, or created then id), not by finding it in this filtered list, so
+    // it still works after the cursor note was resolved, re-filtered or
+    // deleted. `older` is how many filtered notes sort before the cursor.
+    let older = match a.str("before_id") {
+        Some(cursor) => {
+            let rank = cursor_rank(&all, cursor)?;
+            filtered.iter().take_while(|(at, _)| *at < rank).count()
+        }
+        None => total,
+    };
     // Newest notes are at the end. offset skips that many, then limit keeps
     // the newest of what remains. offset 0 with no before_id is the 1.0.0 page.
-    // before_id is the stable cursor: new notes written later are newer, so
-    // they do not appear again on the next older page.
-    if offset >= notes.len() {
-        notes.clear();
-    } else if offset > 0 {
-        notes.truncate(notes.len() - offset);
-    }
-    let truncated = notes.len() > limit;
-    if truncated {
-        notes.drain(..notes.len() - limit);
-    }
+    let end = older.saturating_sub(offset);
+    let start = end.saturating_sub(limit);
+    let notes: Vec<&Note> = filtered[start..end].iter().map(|(_, n)| *n).collect();
+    let truncated = start > 0;
     let returned = notes.len() as u64;
-    let next_before = if truncated {
-        notes
-            .first()
-            .map(|n| Value::str(&n.id))
-            .unwrap_or(Value::Null)
-    } else {
-        Value::Null
+    let next_before = match notes.first() {
+        Some(oldest) if truncated => Value::String(cursor_of(oldest)),
+        _ => Value::Null,
     };
+    // next_offset is absolute: the offset to pass without before_id for the
+    // next older page, counted from the newest note in this filtered list.
     let next_offset = if truncated {
-        Value::uint(offset as u64 + returned)
+        Value::uint((total - start) as u64)
     } else {
         Value::Null
     };
@@ -439,6 +439,71 @@ fn note_ls(a: &Args) -> Result<Value, String> {
         ));
     }
     Ok(Value::Object(pairs))
+}
+
+/// The cursor handed out as `next_before_id`: the note id, then `@` and its
+/// `created` time, then `@` and its `seq` when it has one. The id alone is
+/// also accepted while that note still exists.
+fn cursor_of(n: &Note) -> String {
+    match n.seq {
+        Some(seq) => format!("{}@{}@{seq}", n.id, n.created),
+        None => format!("{}@{}", n.id, n.created),
+    }
+}
+
+/// How many notes of the full list sort before the cursor. A cursor that
+/// names a stored note uses that note's place. A cursor whose note is gone is
+/// placed by its key, by merging a stand-in note into the list order.
+fn cursor_rank(all: &[Note], cursor: &str) -> Result<usize, String> {
+    let mut parts = cursor.split('@');
+    let id = parts.next().unwrap_or_default();
+    let created = parts.next();
+    let seq = parts.next();
+    let bad = || {
+        format!(
+            "before_id \"{}\" is not a cursor. Pass next_before_id from the previous page, or a note id.",
+            crate::fsx::clip(cursor, 80)
+        )
+    };
+    if parts.next().is_some() || id.is_empty() {
+        return Err(bad());
+    }
+    if let Some(at) = all.iter().position(|n| n.id == id) {
+        return Ok(at);
+    }
+    let Some(created) = created else {
+        return Err(format!(
+            "before_id \"{}\" names no note. Pass next_before_id from the previous page, which still works after that note is deleted.",
+            crate::fsx::clip(id, 80)
+        ));
+    };
+    if !crate::fsx::valid_timestamp(created) {
+        return Err(bad());
+    }
+    let seq = match seq {
+        Some(v) => Some(note::parse_seq(v).map_err(|_| bad())?),
+        None => None,
+    };
+    let mut merged: Vec<Note> = all.to_vec();
+    merged.push(Note {
+        id: id.to_string(),
+        kind: String::new(),
+        status: String::new(),
+        summary: String::new(),
+        agent: String::new(),
+        created: created.to_string(),
+        evidence: Vec::new(),
+        tags: Vec::new(),
+        promoted: None,
+        seq,
+        superseded: false,
+        body: String::new(),
+    });
+    note::sort_notes(&mut merged);
+    Ok(merged
+        .iter()
+        .position(|n| n.id == id && n.kind.is_empty())
+        .unwrap_or(merged.len()))
 }
 
 fn brief(a: &Args) -> Result<Value, String> {

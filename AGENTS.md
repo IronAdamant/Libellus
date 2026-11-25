@@ -57,5 +57,5 @@ cargo build --release --locked
 - `examples/perf.rs` release timings. `docs/perf/` the recorded numbers.
 - `tests/hostile_input.rs`, `tests/store_integrity.rs`, `tests/cli_and_groups.rs`,
   `tests/note_life.rs`, `tests/ledger_groups.rs`, `tests/promote.rs`,
-  `tests/hook.rs`, `tests/agent_ux.rs`, `tests/review4.rs`: the failure modes the design avoids.
+  `tests/hook.rs`, `tests/agent_ux.rs`, `tests/review4.rs`, `tests/review5.rs`: the failure modes the design avoids.
   Keep them passing.

@@ -147,8 +147,11 @@ pub fn handle(server: &Server, bytes: &[u8]) -> Option<String> {
         _ => return Some(rpc_error(&reply_id, -32600, "jsonrpc must be \"2.0\"")),
     }
     let Some(method) = msg.get("method").and_then(Value::as_str) else {
-        // A response or garbage from the client; there is nothing to answer.
-        return if id.is_some() {
+        // A response from the client (`result` or `error` with an id) is
+        // never answered: replying to a reply would loop. A message with an
+        // id and neither a method nor a result is a bad request.
+        let response = msg.get("result").is_some() || msg.get("error").is_some();
+        return if id.is_some() && !response {
             Some(rpc_error(&reply_id, -32600, "missing method"))
         } else {
             None

@@ -1,5 +1,5 @@
 //! Libellus: a private notepad and number ledger for each AI agent.
-//! Standard library only. See basis.md for the design and SPEC.md for the format.
+//! Standard library only. See SPEC.md for the format and README.md for what is built.
 
 pub mod brief;
 pub mod check;

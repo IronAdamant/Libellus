@@ -16,16 +16,12 @@ pub fn run() -> Result<Value, String> {
         let loaded = note::load_all(&store, &agent)?;
         problems.extend(loaded.warnings);
         let ledger_read = ledger::read(&store, &agent)?;
-        problems.extend(ledger_read.warnings);
-        let entries = ledger_read.entries;
-        let (_totals, bad) = ledger::sum_prefix(&entries);
-        if let Some(line) = bad {
+        problems.extend(ledger_read.warnings.iter().cloned());
+        if let Some(over) = ledger_read.sum().1 {
             let path = store.ledger_path(&agent)?;
-            problems.push(format!(
-                "ledger {} line {line}: totals overflowed a 64-bit number",
-                path.display()
-            ));
+            problems.push(ledger::overflow_text(&path, over.line));
         }
+        let entries = ledger_read.entries;
         problems.extend(check_archives(&store, &agent)?);
         agents.push(Value::obj(vec![
             ("agent", Value::str(&agent)),
@@ -85,13 +81,9 @@ fn check_archives(store: &Store, agent: &str) -> Result<Vec<String>, String> {
         }
         match ledger::read_at(&path, agent, false) {
             Ok(read) => {
-                problems.extend(read.warnings);
-                let (_totals, bad) = ledger::sum_prefix(&read.entries);
-                if let Some(line) = bad {
-                    problems.push(format!(
-                        "ledger {} line {line}: totals overflowed a 64-bit number",
-                        path.display()
-                    ));
+                problems.extend(read.warnings.iter().cloned());
+                if let Some(over) = read.sum().1 {
+                    problems.push(ledger::overflow_text(&path, over.line));
                 }
             }
             Err(err) => problems.push(err),

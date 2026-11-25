@@ -64,6 +64,11 @@ fn relatum_kind(note: &Note) -> Result<&'static str, String> {
 
 /// `$SWARMNOTES_DIR`, else the nearest `.swarmnotes/` above the working
 /// directory. A missing store is an error and is not created.
+///
+/// `SWARMNOTES_DIR` is an explicit choice by the host and may lead through a
+/// symlink (a shared store, or `/tmp` on macOS). A `.swarmnotes` found by
+/// walking up that is a symlink or a file is refused, and the walk does not
+/// carry on to a parent store, the same rule as `.libellus`.
 fn find_relatum() -> Result<PathBuf, String> {
     if let Some(env) = std::env::var_os("SWARMNOTES_DIR") {
         if !env.is_empty() {
@@ -80,8 +85,14 @@ fn find_relatum() -> Result<PathBuf, String> {
     let mut cur = cwd.as_path();
     loop {
         let cand = cur.join(".swarmnotes");
-        if cand.is_dir() {
-            return Ok(cand);
+        if let Ok(meta) = fs::symlink_metadata(&cand) {
+            if meta.is_dir() {
+                return Ok(cand);
+            }
+            return Err(format!(
+                "{} is not a folder (a symlink or file); refusing to use it or a Relatum store above it. Set SWARMNOTES_DIR to choose a store on purpose.",
+                cand.display()
+            ));
         }
         match cur.parent() {
             Some(parent) => cur = parent,
@@ -102,6 +113,12 @@ fn id_segments(scope: &str, id: &str) -> Result<Vec<String>, String> {
         if !valid_relatum_segment(part) {
             return Err(format!(
                 "invalid scope \"{}\": each segment must match _?[a-z0-9][a-z0-9-]*",
+                fsx::clip(scope, 60)
+            ));
+        }
+        if fsx::reserved_name(part) {
+            return Err(format!(
+                "invalid scope \"{}\": \"{part}\" is a device name on Windows (con, prn, aux, nul, com1-9, lpt1-9)",
                 fsx::clip(scope, 60)
             ));
         }

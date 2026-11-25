@@ -152,20 +152,19 @@ pub fn report(a: &Args) -> Result<Value, String> {
         None => store.agents()?,
     };
     let mut entries = Vec::new();
-    let mut ledger_error = None;
+    // Every problem is kept: a left-out line and an overflow can both apply.
+    let mut problems: Vec<String> = Vec::new();
     for name in &agents {
         let summed = ledger::load_report(&store, name)?;
         let mut rows = summed.entries;
-        if ledger_error.is_none() {
-            if let Some(warning) = summed.warnings.into_iter().next() {
-                ledger_error = Some(warning);
-            }
+        if let Some(warning) = summed.warnings.into_iter().next() {
+            problems.push(warning);
         }
         if let Some(line) = summed.overflow_line {
             let path = store.ledger_path(name)?;
-            ledger_error = Some(format!(
-                "ledger {} line {line}: totals overflowed a 64-bit number. Totals stop before that line.",
-                path.display()
+            problems.push(format!(
+                "{}. Totals stop before that line.",
+                ledger::overflow_text(&path, line)
             ));
         }
         if let Some(task) = task {
@@ -177,13 +176,11 @@ pub fn report(a: &Args) -> Result<Value, String> {
         entries.extend(rows);
     }
     let (totals, combined) = ledger::sum_prefix(&entries);
-    if let Some(line) = combined {
-        entries.truncate(line - 1);
-        if ledger_error.is_none() {
-            ledger_error = Some(
-                "ledger totals overflowed a 64-bit number while adding agents together. Totals stop before that point.".into(),
-            );
-        }
+    if let Some(index) = combined {
+        entries.truncate(index);
+        problems.push(
+            "ledger totals overflowed a 64-bit number while adding agents together. Totals stop before that point.".into(),
+        );
     }
     let mut pairs = match totals.to_value() {
         Value::Object(fields) => fields,
@@ -208,8 +205,11 @@ pub fn report(a: &Args) -> Result<Value, String> {
             totals_map(&ledger::by_step(&entries)?),
         ));
     }
-    if let Some(err) = ledger_error {
-        pairs.push(("ledger_error".to_string(), Value::String(err)));
+    if !problems.is_empty() {
+        pairs.push((
+            "ledger_error".to_string(),
+            Value::String(problems.join("; ")),
+        ));
     }
     Ok(Value::Object(pairs))
 }

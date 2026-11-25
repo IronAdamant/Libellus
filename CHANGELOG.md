@@ -1,8 +1,45 @@
 # Changelog
 
-## Unreleased
+## 1.2.2
 
+Same store format as 1.2.1. Fixes from the fifth review.
+
+- The line named for a ledger total overflow counted only the lines that
+  were added up, so a ledger with left-out lines named the wrong line.
+  `ledger`, `brief`, `check` and `spend` now name the line in the file, from
+  one shared helper. `ledger` keeps a left-out line warning beside the
+  overflow instead of replacing it.
+- The `agent-tools` line was case-sensitive. `libellus: disable Ledger` now
+  disables the ledger, as the SPEC said.
+- `ls --before_id` failed once the cursor note no longer matched the filter
+  (resolved, with `--status open`) or was deleted. The cursor is placed by
+  the list order. `next_before_id` is now `<id>@<created>@<seq>`, which still
+  works after the note is deleted; a plain id is still accepted while the
+  note exists.
+- `next_offset` was wrong on a page reached with `before_id`. It is now
+  absolute: the offset to pass without `before_id`.
+- `init`, `check`, `mcp`, `serve-mcp`, `help` and `--version` ignored extra
+  arguments. They are usage errors now.
+- `libellus hook --agent=main` failed, and a repeated `--host` was silently
+  last-wins. `hook` uses the same flag parser as the other commands.
+- An empty `LIBELLUS_DIR` was used as a path. It is treated as unset.
+- Before `libellus init`, the server ignored the AGENTS.md groups line and
+  listed every tool. It now reads the nearest AGENTS.md walking up.
+- A note saved with CRLF line endings was reported as corrupt and broke `ls`
+  and `brief`. It is read as LF. The file is not rewritten on read.
+- Lock liveness ran `ps -p`. A `ps` without `-p` (BusyBox), or one that
+  failed, made every holder look dead, so live locks were broken. On Unix the
+  check is now `kill(pid, 0)`, and no process is started while waiting.
+- A `ledger.meta` without `tasks_complete` was trusted for task totals. It
+  now counts as incomplete, so the task is totalled from the ledger.
+- A symlinked `.swarmnotes` found by walking up was followed. It is refused,
+  as the SPEC said. `SWARMNOTES_DIR` may still lead through a symlink.
+- Windows device names (`con`, `nul`, `aux`, `prn`, `com1`-`com9`,
+  `lpt1`-`lpt9`) are refused as agent names, note ids and Relatum scopes on
+  every platform. An id made from a summary such as "Con" becomes `con-note`.
+- A JSON-RPC response from the client got an error reply. It gets none.
 - The brief said "1 ledger entries"; it now says "1 ledger entry".
+- The crate doc named a `basis.md` that does not exist.
 
 ## 1.2.1
 

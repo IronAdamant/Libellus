@@ -157,11 +157,45 @@ impl Entry {
 }
 
 /// One ledger file after a single read. `entries` are the lines that count.
+/// `lines` holds the 1-based file line of each entry, so a message about an
+/// entry names the line in the file, not its place among the counted ones.
 /// `warnings` name lines that were left out. `torn` is a partial last line.
 pub struct Read {
     pub entries: Vec<Entry>,
+    pub lines: Vec<usize>,
     pub warnings: Vec<String>,
     pub torn: bool,
+}
+
+/// The first counted entry whose total does not fit in 64 bits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Overflow {
+    /// Index into `Read::entries`. The entries before it fit.
+    pub index: usize,
+    /// 1-based line in the ledger file.
+    pub line: usize,
+}
+
+impl Read {
+    /// Totals of the leading entries that fit, and where the first one that
+    /// does not fit sits, both as an entry index and as a file line. Every
+    /// overflow message goes through here so the line number cannot drift.
+    pub fn sum(&self) -> (Totals, Option<Overflow>) {
+        let (totals, index) = sum_prefix(&self.entries);
+        let overflow = index.map(|index| Overflow {
+            index,
+            line: self.lines.get(index).copied().unwrap_or(index + 1),
+        });
+        (totals, overflow)
+    }
+}
+
+/// The one wording for a ledger whose running total overflows at `line`.
+pub fn overflow_text(path: &std::path::Path, line: usize) -> String {
+    format!(
+        "ledger {} line {line}: totals overflowed a 64-bit number",
+        path.display()
+    )
 }
 
 /// Largest ledger file we will read, and the longest single line.
@@ -310,11 +344,11 @@ fn append_from_file(
             path.display()
         ));
     }
-    let (so_far, bad) = sum_prefix(&existing.entries);
-    if let Some(n) = bad {
+    let (so_far, bad) = existing.sum();
+    if let Some(over) = bad {
         return Err(format!(
-            "not appended: {} line {n}: ledger totals overflowed a 64-bit number. The file was not changed.",
-            path.display()
+            "not appended: {}. The file was not changed.",
+            overflow_text(path, over.line)
         ));
     }
     let mut agent_totals = so_far;
@@ -389,7 +423,8 @@ fn ignore_file_size_signal() {
 #[cfg(not(unix))]
 fn ignore_file_size_signal() {}
 
-/// A ledger read, summed. `overflow_line` is the first entry that does not fit.
+/// A ledger read, summed. `overflow_line` is the 1-based file line of the
+/// first entry that does not fit.
 pub struct Summed {
     pub entries: Vec<Entry>,
     pub totals: Totals,
@@ -417,19 +452,19 @@ pub struct Recorded {
 }
 
 /// Read a ledger and sum what fits. A corrupt line is still a hard error.
-/// An overflow is reported as `overflow_line` (1-based) and the entries stop
-/// before that line. `warnings` are lines left out of the totals.
+/// An overflow is reported as `overflow_line` (1-based file line) and the
+/// entries stop before that line. `warnings` are lines left out of the totals.
 pub fn read_summed(store: &Store, agent: &str) -> Result<Summed, String> {
     let read = read(store, agent)?;
-    let (totals, overflow_line) = sum_prefix(&read.entries);
-    let entries = match overflow_line {
-        Some(line) => read.entries[..line - 1].to_vec(),
-        None => read.entries,
-    };
+    let (totals, overflow) = read.sum();
+    let mut entries = read.entries;
+    if let Some(over) = overflow {
+        entries.truncate(over.index);
+    }
     Ok(Summed {
         entries,
         totals,
-        overflow_line,
+        overflow_line: overflow.map(|over| over.line),
         warnings: read.warnings,
         torn: read.torn,
     })
@@ -464,6 +499,7 @@ pub fn read_at(path: &std::path::Path, agent: &str, enforce_cap: bool) -> Result
         fsx::FileKind::Missing => {
             return Ok(Read {
                 entries: Vec::new(),
+                lines: Vec::new(),
                 warnings: Vec::new(),
                 torn: false,
             })
@@ -498,6 +534,7 @@ fn parse_text(path: &std::path::Path, agent: &str, text: &str) -> Result<Read, S
         lines.pop();
     }
     let mut entries = Vec::new();
+    let mut numbers = Vec::new();
     let mut warnings = Vec::new();
     if torn {
         warnings.push(format!(
@@ -525,9 +562,11 @@ fn parse_text(path: &std::path::Path, agent: &str, text: &str) -> Result<Read, S
             continue;
         }
         entries.push(entry);
+        numbers.push(i + 1);
     }
     Ok(Read {
         entries,
+        lines: numbers,
         warnings,
         torn,
     })
@@ -536,20 +575,22 @@ fn parse_text(path: &std::path::Path, agent: &str, text: &str) -> Result<Read, S
 pub fn total(entries: &[Entry]) -> Result<Totals, String> {
     let (totals, bad) = sum_prefix(entries);
     match bad {
-        Some(line) => Err(format!(
-            "ledger totals overflowed a 64-bit number at line {line}"
+        Some(index) => Err(format!(
+            "ledger totals overflowed a 64-bit number at entry {}",
+            index + 1
         )),
         None => Ok(totals),
     }
 }
 
-/// Totals of the leading entries that fit in 64 bits. `overflow_line` is the
-/// 1-based index of the first entry that does not fit, when there is one.
+/// Totals of the leading entries that fit in 64 bits, and the 0-based index
+/// of the first entry that does not fit. This is an index into `entries`,
+/// not a file line: use `Read::sum` to name a line.
 pub fn sum_prefix(entries: &[Entry]) -> (Totals, Option<usize>) {
     let mut totals = Totals::default();
     for (i, entry) in entries.iter().enumerate() {
         if totals.add(entry).is_err() {
-            return (totals, Some(i + 1));
+            return (totals, Some(i));
         }
     }
     (totals, None)

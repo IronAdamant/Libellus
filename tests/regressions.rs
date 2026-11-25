@@ -419,7 +419,8 @@ fn list_pages_with_a_stable_cursor_and_check_is_a_tool() {
     let body = String::from_utf8(first.stdout).unwrap();
     assert!(body.contains("\"truncated\":true"), "{body}");
     assert!(body.contains("\"next_offset\":2"), "{body}");
-    assert!(body.contains("\"next_before_id\":\"n4\""), "{body}");
+    // Since 1.2.2 the cursor carries the note's place: id@created@seq.
+    assert!(body.contains("\"next_before_id\":\"n4@"), "{body}");
     let second = cli(
         &dir,
         &["ls", "--agent", "main", "--limit", "2", "--before_id", "n4"],

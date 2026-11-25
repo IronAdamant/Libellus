@@ -3,29 +3,40 @@
 //! install it and does not run a background process.
 
 use crate::fsx;
+use crate::json::Value;
+use crate::tool::{Kind, Param};
+
+/// The flags `libellus hook` takes. They go through the same parser as the
+/// tool commands.
+const PARAMS: &[Param] = &[
+    Param {
+        name: "agent",
+        kind: Kind::Str,
+        required: false,
+        doc: "The agent whose brief the hook prints.",
+        choices: &[],
+    },
+    Param {
+        name: "host",
+        kind: Kind::Str,
+        required: false,
+        doc: "cursor, claude or generic.",
+        choices: &[],
+    },
+];
 
 pub fn from_argv(argv: &[String]) -> Result<String, String> {
-    let mut agent: Option<String> = None;
-    let mut host = "generic".to_string();
-    let mut i = 0;
-    while i < argv.len() {
-        let flag = argv[i].as_str();
-        let value = match argv.get(i + 1) {
-            Some(v) if !v.starts_with("--") => v.clone(),
-            _ => return Err(format!("{flag} needs a value")),
-        };
-        match flag {
-            "--agent" => {
-                if agent.is_some() {
-                    return Err("--agent given twice".into());
-                }
-                agent = Some(value);
-            }
-            "--host" => host = value,
-            other => return Err(format!("unknown flag {other} (use --agent and --host)")),
-        }
-        i += 2;
-    }
+    let parsed = crate::cli::parse_flags(PARAMS, argv)
+        .map_err(|e| format!("{e} (hook takes --agent and --host)"))?;
+    let agent = parsed
+        .get("agent")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let host = parsed
+        .get("host")
+        .and_then(Value::as_str)
+        .unwrap_or("generic")
+        .to_string();
     let agent = match agent {
         Some(name) => name,
         None => std::env::var("LIBELLUS_AGENT")
@@ -34,7 +45,7 @@ pub fn from_argv(argv: &[String]) -> Result<String, String> {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "missing --agent (or set LIBELLUS_AGENT)".to_string())?,
     };
-    if !fsx::valid_slug(&agent) {
+    if !fsx::valid_slug(&agent) || fsx::reserved_name(&agent) {
         return Err(format!(
             "invalid agent \"{}\": use lowercase letters, digits and '-'",
             fsx::clip(&agent, 40)

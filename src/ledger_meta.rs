@@ -148,7 +148,7 @@ fn load(path: &Path) -> Option<Cache> {
     let tasks_complete = value
         .get("tasks_complete")
         .and_then(Value::as_bool)
-        .unwrap_or(true);
+        .unwrap_or(false);
     let mut tasks = HashMap::new();
     if let Some(Value::Object(pairs)) = value.get("tasks") {
         for (key, row) in pairs {

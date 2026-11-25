@@ -181,6 +181,15 @@ impl Note {
     }
 
     pub fn parse(id: &str, text: &str) -> Result<Note, String> {
+        // A note saved with CRLF line endings (an editor on Windows) is read
+        // as if it had LF. The file itself is not rewritten here.
+        let unix;
+        let text = if text.contains("\r\n") {
+            unix = text.replace("\r\n", "\n");
+            unix.as_str()
+        } else {
+            text
+        };
         let mut lines = text.split('\n');
         if lines.next() != Some("---") {
             return Err("does not start with a --- frontmatter line".into());
@@ -442,10 +451,14 @@ fn read_notes_parallel(ids: &[(String, std::path::PathBuf)]) -> Result<Vec<Note>
     Ok(notes)
 }
 
-/// One or two slug segments, the same ids `libellus_get` will open.
+/// One or two slug segments, none a Windows device name: the same ids
+/// `libellus_get` will open.
 pub fn valid_note_id(id: &str) -> bool {
     let segs: Vec<&str> = id.split('/').collect();
-    (1..=2).contains(&segs.len()) && segs.iter().all(|s| fsx::valid_slug(s))
+    (1..=2).contains(&segs.len())
+        && segs
+            .iter()
+            .all(|s| fsx::valid_slug(s) && !fsx::reserved_name(s))
 }
 
 fn dedupe_tags(tags: Vec<String>) -> Result<Vec<String>, String> {

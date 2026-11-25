@@ -18,10 +18,19 @@ pub struct Store {
     pub project: PathBuf,
 }
 
+/// `$LIBELLUS_DIR`, when it is set to something other than blank. An empty
+/// value is treated as unset, like the other Libellus variables.
+fn env_dir() -> Option<PathBuf> {
+    let v = std::env::var_os("LIBELLUS_DIR")?;
+    if v.to_str().is_some_and(|s| s.trim().is_empty()) {
+        return None;
+    }
+    Some(PathBuf::from(v))
+}
+
 impl Store {
     pub fn open() -> Result<Store, String> {
-        if let Some(v) = std::env::var_os("LIBELLUS_DIR") {
-            let dir = PathBuf::from(v);
+        if let Some(dir) = env_dir() {
             return Store::at(dir);
         }
         let cwd =
@@ -82,8 +91,8 @@ impl Store {
 
     /// Create `.libellus/` in the working directory. Safe to repeat.
     pub fn init() -> Result<Store, String> {
-        let dir = match std::env::var_os("LIBELLUS_DIR") {
-            Some(v) => PathBuf::from(v),
+        let dir = match env_dir() {
+            Some(dir) => dir,
             None => std::env::current_dir()
                 .map_err(|e| format!("cannot read the working folder: {e}"))?
                 .join(".libellus"),
@@ -97,6 +106,11 @@ impl Store {
             return Err(format!(
                 "invalid agent \"{}\": use lowercase letters, digits and '-' (for example main or sub-2)",
                 fsx::clip(agent, 40)
+            ));
+        }
+        if fsx::reserved_name(agent) {
+            return Err(format!(
+                "invalid agent \"{agent}\": a device name on Windows (con, prn, aux, nul, com1-9, lpt1-9); pick another name"
             ));
         }
         fsx::join_id(&self.dir.join("agents"), agent, 1)
@@ -148,6 +162,24 @@ impl Store {
     }
 }
 
+/// The folder whose AGENTS.md chooses the tool groups. With a store, that is
+/// the folder holding it. Before `libellus init`, it is the parent of
+/// `$LIBELLUS_DIR` when that is set, otherwise the nearest folder walking up
+/// from the working directory that has an AGENTS.md, the same walk that
+/// finds a store.
 pub fn project_dir() -> Option<PathBuf> {
-    Store::open().ok().map(|s| s.project)
+    if let Ok(store) = Store::open() {
+        return Some(store.project);
+    }
+    if let Some(dir) = env_dir() {
+        return dir.parent().map(Path::to_path_buf);
+    }
+    let cwd = std::env::current_dir().ok()?;
+    let mut cur: &Path = &cwd;
+    loop {
+        if fs::symlink_metadata(cur.join("AGENTS.md")).is_ok() {
+            return Some(cur.to_path_buf());
+        }
+        cur = cur.parent()?;
+    }
 }

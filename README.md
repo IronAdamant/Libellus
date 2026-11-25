@@ -170,7 +170,7 @@ project.
 | `libellus_note` | core | Write a note. Never overwrites an existing one. |
 | `libellus_get` | core | Read one note, including its body. |
 | `libellus_resolve` | core | Mark a note resolved and add a one-line outcome. `supersede` marks it replaced. |
-| `libellus_ls` | core | List your notes. Page with `before_id`. |
+| `libellus_ls` | core | List your notes. Page with `before_id`: pass back `next_before_id`. |
 | `libellus_brief` | core | The compaction brief. Still returns the notes if the ledger cannot be read. |
 | `libellus_check` | core | Read every note and ledger, and fail on damage. Clears locks and temp files left by a writer that is gone. |
 | `libellus_promote` | core | Copy a note into Relatum and record its Relatum id. |
@@ -205,8 +205,10 @@ libellus: disable ledger
 ````
 
 Or list what you want: `libellus: tools core, ledger`. The environment
-variables `LIBELLUS_TOOLS` and `LIBELLUS_DISABLE` override that line. The
-server rereads the choice on every request. A typo, or trying to disable
+variables `LIBELLUS_TOOLS` and `LIBELLUS_DISABLE` override that line. Case
+is ignored. The line is read even before `libellus init`, from the nearest
+AGENTS.md above the working folder. The server rereads the choice on every
+request. A typo, or trying to disable
 `core`, falls back to the core tools and says why. See
 [AGENTS.snippet.md](AGENTS.snippet.md) for text to paste into a project.
 
@@ -219,9 +221,10 @@ is covered by tests in `tests/`:
   name. It is never read as empty, never reset, and a damaged ledger is never
   appended to.
 - **No writing outside the store.** Ids and agent names must be simple
-  lowercase names. Paths that leave the store, and symlinks (including a
-  symlinked `.libellus`, `notes/` or `archive/`), are refused. Promote applies
-  the same checks to the Relatum path.
+  lowercase names, and not a Windows device name such as `con` or `nul`, so a
+  store copies to any system. Paths that leave the store, and symlinks (including a
+  symlinked `.libellus`, `.swarmnotes`, `notes/` or `archive/`), are refused.
+  Promote applies the same checks to the Relatum path.
 - **Safe writes.** Every write lands whole through a temp file. A new note
   never overwrites another, and resolve and promote replace only that note's
   own file.
@@ -233,7 +236,8 @@ is covered by tests in `tests/`:
   replaced. A second promote is an error and writes no second Relatum note.
 - **A strict server.** Bad JSON, oversized messages and batches get a JSON-RPC
   error and the server keeps running. Unknown methods and misspelt arguments
-  are errors. A tool that panics is caught and reported.
+  are errors, on the command line too. A tool that panics is caught and
+  reported.
 
 ## Performance
 

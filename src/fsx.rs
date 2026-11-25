@@ -220,13 +220,36 @@ pub fn valid_slug(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
+/// A name Windows reserves for a device (`con`, `nul`, `com1` and so on),
+/// with or without an extension. Such a file cannot be made or opened on
+/// Windows, so it is refused on every platform to keep a store portable.
+pub fn reserved_name(seg: &str) -> bool {
+    let stem = seg.split('.').next().unwrap_or(seg).to_ascii_lowercase();
+    match stem.as_str() {
+        "con" | "prn" | "aux" | "nul" => true,
+        _ => {
+            let b = stem.as_bytes();
+            b.len() == 4
+                && (stem.starts_with("com") || stem.starts_with("lpt"))
+                && (b'1'..=b'9').contains(&b[3])
+        }
+    }
+}
+
 /// Join slug segments (`a/b`, at most `max_segments`) under `base`, refusing
-/// anything that is not a plain slug and any existing symlink on the way.
+/// anything that is not a plain slug, a Windows device name, and any existing
+/// symlink on the way.
 pub fn join_id(base: &Path, id: &str, max_segments: usize) -> Result<PathBuf, String> {
     let segs: Vec<&str> = id.split('/').collect();
     if segs.len() > max_segments || !segs.iter().all(|s| valid_slug(s)) {
         return Err(format!(
             "invalid id \"{}\": use lowercase letters, digits and '-' (up to {max_segments} segment(s) joined by '/', each up to 64 characters)",
+            clip(id, 60)
+        ));
+    }
+    if let Some(bad) = segs.iter().find(|s| reserved_name(s)) {
+        return Err(format!(
+            "invalid id \"{}\": \"{bad}\" is a device name on Windows (con, prn, aux, nul, com1-9, lpt1-9); pick another name",
             clip(id, 60)
         ));
     }
@@ -531,18 +554,37 @@ fn lock_pid_text(text: &str) -> Option<u32> {
 }
 
 /// `Some(false)` when this platform can see that `pid` is not running.
+///
+/// On Unix this asks the kernel with `kill(pid, 0)`, which sends no signal.
+/// Success or EPERM (the process exists but belongs to someone else) is
+/// alive, ESRCH is dead, and any other error is unknown. It does not run
+/// `ps`, so a `ps` without `-p` cannot make a live holder look dead. On other
+/// platforms the answer is unknown and locks are judged by age.
 pub(crate) fn pid_alive(pid: Option<u32>) -> Option<bool> {
     let pid = pid?;
     #[cfg(unix)]
     {
-        let status = std::process::Command::new("ps")
-            .args(["-p", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        match status {
-            Ok(code) => Some(code.success()),
-            Err(_) => None,
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        // 0 and negative values name process groups, not one process. No
+        // single process with such an id can hold a lock.
+        let Ok(id) = i32::try_from(pid) else {
+            return Some(false);
+        };
+        if id <= 0 {
+            return Some(false);
+        }
+        // SAFETY: signal 0 only checks that the process exists.
+        if unsafe { kill(id, 0) } == 0 {
+            return Some(true);
+        }
+        const EPERM: i32 = 1;
+        const ESRCH: i32 = 3;
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(EPERM) => Some(true),
+            Some(ESRCH) => Some(false),
+            _ => None,
         }
     }
     #[cfg(not(unix))]

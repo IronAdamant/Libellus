@@ -205,7 +205,13 @@ fn from_file(all: &'static [Tool], name: &str, known: &[&str], project: Option<&
             continue;
         }
         if inside {
-            if let Some(rest) = t.strip_prefix(name).and_then(|r| r.strip_prefix(':')) {
+            // SPEC section 5: case is ignored in the prefix, the verb and the
+            // group names, the same as the environment variables.
+            let lower = t.to_lowercase();
+            if let Some(rest) = lower
+                .strip_prefix(&name.to_lowercase())
+                .and_then(|r| r.strip_prefix(':'))
+            {
                 directives.push(rest.trim().to_string());
             }
         }

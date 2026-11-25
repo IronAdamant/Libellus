@@ -7,7 +7,7 @@
 //! when the command requires an agent and the flag is omitted.
 
 use crate::json::Value;
-use crate::tool::{Kind, Tool};
+use crate::tool::{Kind, Param, Tool};
 use crate::{store::Store, tools, SERVER, VERSION};
 
 const HELP: &str = "libellus: a private notepad and number ledger for AI agents
@@ -46,6 +46,30 @@ pub fn run(args: &[String], as_mcp: bool) -> i32 {
         eprintln!("{HELP}");
         return 2;
     };
+    // These commands take no arguments. An extra one is a usage error, not
+    // something to ignore.
+    let fixed = matches!(
+        cmd.as_str(),
+        "--version"
+            | "-V"
+            | "version"
+            | "--help"
+            | "-h"
+            | "help"
+            | "mcp"
+            | "serve-mcp"
+            | "init"
+            | "check"
+    );
+    if fixed {
+        if let Some(extra) = args.get(1) {
+            eprintln!(
+                "error: {cmd} takes no arguments, got \"{}\"",
+                crate::fsx::clip(extra, 60)
+            );
+            return 2;
+        }
+    }
     match cmd.as_str() {
         "--version" | "-V" | "version" => write_out(&format!(
             "{{\"name\":\"libellus\",\"version\":\"{VERSION}\"}}\n"
@@ -148,6 +172,14 @@ fn write_out(text: &str) -> i32 {
 }
 
 fn build_args(tool: &Tool, argv: &[String]) -> Result<Value, String> {
+    parse_flags(tool.params, argv)
+}
+
+/// Turn `--name value` flags into an argument object, checked against
+/// `params`. Shared by every command that takes flags, including `hook`, so
+/// `--name=value`, `--name -- --value` and the repeated-flag rule are the
+/// same everywhere.
+pub(crate) fn parse_flags(params: &[Param], argv: &[String]) -> Result<Value, String> {
     let mut pairs: Vec<(String, Value)> = Vec::new();
     let mut i = 0;
     while i < argv.len() {
@@ -156,7 +188,7 @@ fn build_args(tool: &Tool, argv: &[String]) -> Result<Value, String> {
         }
         let (name, inline) = split_flag(&argv[i])?;
         let flag = name.replace('-', "_");
-        let Some(param) = tool.params.iter().find(|p| p.name == flag) else {
+        let Some(param) = params.iter().find(|p| p.name == flag) else {
             return Err(format!("unknown flag --{}", flag.replace('_', "-")));
         };
         let (value, step) = flag_value(argv, i, param.kind, inline)?;
