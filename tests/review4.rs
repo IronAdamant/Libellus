@@ -55,7 +55,15 @@ fn writers_racing_past_a_dead_lock_still_get_distinct_seq() {
     ));
     let lock = dir.join(".libellus/agents/main/.seq.lock");
     for round in 0..6 {
+        // Windows cannot see that a pid is gone, so there it is backdated.
         fs::write(&lock, "pid 999999\n").unwrap();
+        #[cfg(windows)]
+        fs::File::options()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120))
+            .unwrap();
         let children: Vec<_> = (0..6)
             .map(|i| {
                 Command::new(CLI)

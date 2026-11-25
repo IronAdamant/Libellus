@@ -666,7 +666,17 @@ mod tests {
         fs::write(&subject, b"\n").unwrap();
         use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
         for _ in 0..12 {
+            // Windows cannot see that a pid is gone, so there only the age
+            // makes the lock stale. Unix keeps the dead-pid path, whose double
+            // read is the widest race window.
             fs::write(d.join(".ledger.jsonl.lock"), "pid 999999\n").unwrap();
+            #[cfg(windows)]
+            fs::File::options()
+                .write(true)
+                .open(d.join(".ledger.jsonl.lock"))
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120))
+                .unwrap();
             let inside = std::sync::Arc::new(AtomicU64::new(0));
             let most = std::sync::Arc::new(AtomicU64::new(0));
             let gate = std::sync::Arc::new(std::sync::Barrier::new(6));
