@@ -698,6 +698,13 @@ fn board_filters_keep_the_output_small() {
         .and_then(Value::as_str)
         .unwrap()
         .contains("[x] a2: A2"));
+    // The form the help text shows: a separate `false`.
+    let spaced = parsed(&ok(&cli(&dir, &["board", "--open_only", "false"])));
+    assert!(spaced
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap()
+        .contains("[x] a2: A2"));
     let mine = parsed(&ok(&cli(&dir, &["board", "--owner", "sub-1"])));
     assert_eq!(
         mine.get("text").and_then(Value::as_str).unwrap(),
@@ -751,7 +758,7 @@ fn the_html_page_is_escaped_self_contained_and_read_only() {
     assert!(page.contains("type=\"checkbox\" disabled checked"));
     assert!(page.contains("prefers-color-scheme:dark"));
     assert!(page.contains("name=\"viewport\""));
-    assert!(page.contains("1/3 done"), "per project progress");
+    assert!(page.contains("1/2 done"), "per project progress: tasks under it, not itself");
     assert!(
         page.contains("Archived projects") && page.contains("<details><summary><code>old</code>")
     );

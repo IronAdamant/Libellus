@@ -389,8 +389,10 @@ demand. One file, inline CSS, no scripts, no links to anything outside it:
 it works offline, needs no JavaScript (collapsing is `<details>`), follows
 `prefers-color-scheme` and fits a phone. It has a banner saying the page is
 read-only and how to ask for a change ("ask your agent, for example: review
-task <id>"), each project's progress (done/total), a kanban of `todo`,
-`doing`, `blocked` and `done` with dropped tasks collapsed below, the tree
+task <id>"), each project's progress (done/total over the tasks under it,
+not counting the project itself or dropped tasks), a kanban of `todo`,
+`doing`, `blocked` and `done` tasks (projects are in the progress list, not
+the columns) with dropped tasks collapsed below, the tree
 with disabled checkboxes, each agent's open questions (id and summary only),
 archived projects collapsed at the bottom, and the generation time and store
 path in the footer. Each task shows id, title, owner, status, updated time

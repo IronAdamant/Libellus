@@ -322,7 +322,8 @@ fn read_flag_file(path: &str) -> Result<String, String> {
     }
 }
 
-/// `--name`, `--name=value`, or `--name -- value`. `step` is how many argv
+/// `--name`, `--name=value`, or `--name -- value`. A boolean also takes a
+/// following `true` or `false`. `step` is how many argv
 /// entries this flag consumed, including itself.
 fn flag_value(
     argv: &[String],
@@ -334,7 +335,11 @@ fn flag_value(
         return Ok((Some(v.to_string()), 1));
     }
     if matches!(kind, Kind::Bool) {
-        return Ok((None, 1));
+        // `--open_only false` as well as `--open_only=false` and a bare flag.
+        return Ok(match argv.get(i + 1).map(String::as_str) {
+            Some(v @ ("true" | "false")) => (Some(v.to_string()), 2),
+            _ => (None, 1),
+        });
     }
     match argv.get(i + 1).map(String::as_str) {
         Some("--") => {

@@ -106,7 +106,7 @@ body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.45 s
 h1{font-size:1.4rem;margin:.2rem 0 .6rem}h2{font-size:1.1rem;margin:1.6rem 0 .6rem;border-bottom:1px solid var(--line);padding-bottom:.2rem}
 .banner{background:var(--banner);border:1px solid var(--line);border-radius:8px;padding:.6rem .8rem}
 .muted{color:var(--muted)}code{font:13px ui-monospace,Menlo,Consolas,monospace;overflow-wrap:anywhere}
-.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:12px}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:12px}
 .col{background:transparent;border:1px solid var(--line);border-radius:8px;padding:8px;min-width:0}
 .col h3{margin:.1rem 0 .5rem;font-size:.95rem;text-transform:uppercase;letter-spacing:.04em}
 .card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 8px;margin:0 0 8px;overflow-wrap:anywhere}
@@ -175,7 +175,8 @@ pub fn render(
         let cards: Vec<&Task> = order
             .iter()
             .map(|(t, _)| *t)
-            .filter(|t| t.status == *col)
+            // Projects have their own section above; the columns hold tasks.
+            .filter(|t| t.status == *col && !t.parent.is_empty())
             .collect();
         h.push_str(&format!(
             "<section class=\"col\"><h3>{col} ({})</h3>\n",
@@ -272,15 +273,20 @@ pub fn render(
     h
 }
 
-/// Done and total tasks under and including `root`.
+/// Done and total tasks under `root`, not counting `root` itself or dropped
+/// tasks. A project with no tasks under it counts as itself.
 fn progress(b: &Board, root: &str) -> (usize, usize) {
-    let mut ids = vec![root.to_string()];
-    ids.extend(b.descendants(root));
-    let done = ids
+    let mut ids = b.descendants(root);
+    if ids.is_empty() {
+        ids.push(root.to_string());
+    }
+    let live: Vec<&Task> = ids
         .iter()
-        .filter(|i| b.get(i).is_some_and(|t| t.status == "done"))
-        .count();
-    (done, ids.len())
+        .filter_map(|i| b.get(i))
+        .filter(|t| t.status != "dropped")
+        .collect();
+    let done = live.iter().filter(|t| t.status == "done").count();
+    (done, live.len())
 }
 
 fn details(h: &mut String, t: &Task) {
