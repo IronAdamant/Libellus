@@ -142,6 +142,10 @@ pub fn handle(server: &Server, bytes: &[u8]) -> Option<String> {
         ));
     }
     let reply_id = id.cloned().unwrap_or(Value::Null);
+    match msg.get("jsonrpc").and_then(Value::as_str) {
+        Some("2.0") => {}
+        _ => return Some(rpc_error(&reply_id, -32600, "jsonrpc must be \"2.0\"")),
+    }
     let Some(method) = msg.get("method").and_then(Value::as_str) else {
         // A response or garbage from the client; there is nothing to answer.
         return if id.is_some() {

@@ -67,11 +67,31 @@ pub fn write_atomic(dest: &Path, bytes: &[u8], overwrite: bool) -> Result<(), St
     Ok(())
 }
 
-/// Create a folder (and parents) readable only by the current user on Unix.
+/// Create a folder (and any missing parents) readable only by the current user
+/// on Unix. Each directory this call creates is mode 0700, including `.libellus`
+/// when `agents` is created under a new store.
 pub fn make_private_dir(dir: &Path) -> Result<(), String> {
+    let mut created = Vec::new();
+    let mut cur = dir.to_path_buf();
+    loop {
+        if path_exists_nofollow(&cur) {
+            break;
+        }
+        created.push(cur.clone());
+        if !cur.pop() {
+            break;
+        }
+    }
     fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     restrict(dir, true);
+    for path in &created {
+        restrict(path, true);
+    }
     Ok(())
+}
+
+fn path_exists_nofollow(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
 }
 
 #[cfg(unix)]
@@ -100,11 +120,94 @@ pub fn open_append_private(path: &Path) -> Result<fs::File, String> {
         .map_err(|e| format!("cannot open {}: {e}", path.display()))
 }
 
+/// What `symlink_metadata` says. A symlink is not followed, and a fifo, socket
+/// or device is `Other` so callers can refuse to open it.
+pub enum FileKind {
+    Missing,
+    Regular { len: u64 },
+    Symlink,
+    Other,
+}
+
+pub fn file_kind(path: &Path) -> Result<FileKind, String> {
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(FileKind::Missing),
+        Err(e) => Err(format!("cannot stat {}: {e}", path.display())),
+        Ok(meta) => {
+            let kind = meta.file_type();
+            if kind.is_symlink() {
+                Ok(FileKind::Symlink)
+            } else if kind.is_file() {
+                Ok(FileKind::Regular { len: meta.len() })
+            } else {
+                Ok(FileKind::Other)
+            }
+        }
+    }
+}
+
+/// A missing path is fine (the caller may create it). A symlink or anything
+/// that is not a regular file is an error, before any open that could block.
+pub fn refuse_special(path: &Path) -> Result<(), String> {
+    match file_kind(path)? {
+        FileKind::Missing | FileKind::Regular { .. } => Ok(()),
+        FileKind::Symlink => Err(format!(
+            "{} is a symlink; refusing to follow it",
+            path.display()
+        )),
+        FileKind::Other => Err(format!(
+            "{} is not a regular file; refusing to open it",
+            path.display()
+        )),
+    }
+}
+
 /// Read a whole file as UTF-8. Invalid UTF-8 is an error naming the file,
-/// never a lossy read.
+/// never a lossy read. Callers must refuse a symlink or a non-regular file
+/// first: opening a fifo blocks forever.
 pub fn read_strict(path: &Path) -> Result<String, String> {
     let bytes = fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     String::from_utf8(bytes).map_err(|_| format!("{} is not valid UTF-8", path.display()))
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ`, a real civil date and a clock time.
+pub fn valid_timestamp(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+        || b[19] != b'Z'
+    {
+        return false;
+    }
+    let num = |i: usize, n: usize| s[i..i + n].bytes().all(|c| c.is_ascii_digit());
+    if !(num(0, 4) && num(5, 2) && num(8, 2) && num(11, 2) && num(14, 2) && num(17, 2)) {
+        return false;
+    }
+    let y: i64 = s[0..4].parse().unwrap_or(0);
+    let m: i64 = s[5..7].parse().unwrap_or(0);
+    let d: i64 = s[8..10].parse().unwrap_or(0);
+    let hh: i64 = s[11..13].parse().unwrap_or(99);
+    let mm: i64 = s[14..16].parse().unwrap_or(99);
+    let ss: i64 = s[17..19].parse().unwrap_or(99);
+    (1..=12).contains(&m)
+        && (1..=days_in_month(y, m)).contains(&d)
+        && (0..24).contains(&hh)
+        && (0..60).contains(&mm)
+        && (0..60).contains(&ss)
+}
+
+fn days_in_month(y: i64, m: i64) -> i64 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) => 29,
+        2 => 28,
+        _ => 0,
+    }
 }
 
 /// A slug: `[a-z0-9][a-z0-9-]*`, at most 64 bytes.
@@ -313,13 +416,106 @@ fn lock_path(subject: &Path) -> Result<PathBuf, String> {
 }
 
 fn lock_is_stale(path: &Path) -> bool {
-    let Ok(meta) = fs::metadata(path) else {
-        return true;
+    // Missing means the holder already unlinked it. Do not treat that as
+    // stale: the caller would otherwise delete a lock created a moment later.
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return false;
     };
-    meta.modified()
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    let aged = meta
+        .modified()
         .ok()
         .and_then(|t| t.elapsed().ok())
-        .is_some_and(|age| age > LOCK_STALE)
+        .is_some_and(|age| age > LOCK_STALE);
+    if aged {
+        return true;
+    }
+    // A pid line that is still being written does not end in a newline.
+    // A finished line naming a dead process is stale at once, where `ps` can
+    // say so. Otherwise wait until the age above.
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    if !text.ends_with('\n') {
+        return false;
+    }
+    let Some(pid) = lock_pid_text(&text) else {
+        return false;
+    };
+    if pid_alive(Some(pid)) != Some(false) {
+        return false;
+    }
+    // The name may have been replaced since the first read. Delete only when
+    // the same finished pid line is still there and still dead.
+    let Ok(again) = fs::read_to_string(path) else {
+        return false;
+    };
+    again == text && pid_alive(Some(pid)) == Some(false)
+}
+
+fn lock_pid_text(text: &str) -> Option<u32> {
+    let rest = text.trim().strip_prefix("pid ")?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
+/// `Some(false)` when this platform can see that `pid` is not running.
+fn pid_alive(pid: Option<u32>) -> Option<bool> {
+    let pid = pid?;
+    #[cfg(unix)]
+    {
+        let status = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        match status {
+            Ok(code) => Some(code.success()),
+            Err(_) => None,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Lock files under `root` whose holder is gone or whose age is past
+/// `LOCK_STALE`. The message says how to clear one.
+pub fn stale_lock_notes(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_stale_locks(root, &mut out);
+    out
+}
+
+fn collect_stale_locks(dir: &Path, out: &mut Vec<String>) {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_symlink() {
+            continue;
+        }
+        if kind.is_dir() {
+            collect_stale_locks(&path, out);
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') && name.ends_with(".lock") && lock_is_stale(&path) {
+            out.push(format!(
+                "stale lock {}. Remove that file if no libellus process is using it.",
+                path.display()
+            ));
+        }
+    }
 }
 
 /// Current UTC time as `YYYY-MM-DDTHH:MM:SSZ`.
@@ -369,9 +565,40 @@ mod tests {
     }
 
     #[test]
+    fn the_lock_keeps_one_holder() {
+        let d = scratch("lock");
+        let subject = d.join("ledger.jsonl");
+        fs::write(&subject, b"\n").unwrap();
+        let inside = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let subject = subject.clone();
+            let inside = inside.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..20 {
+                    let _lock = Lock::acquire(&subject).unwrap();
+                    let n = inside.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    assert_eq!(n, 0, "two holders");
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    inside.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
     fn dates_are_right() {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(20_782), (2026, 11, 25));
+        assert!(valid_timestamp("2026-11-25T00:00:00Z"));
+        assert!(valid_timestamp("2024-02-29T23:59:59Z"));
+        assert!(!valid_timestamp("2026-02-31T00:00:00Z"));
+        assert!(!valid_timestamp("2025-02-29T00:00:00Z"));
+        assert!(!valid_timestamp("2026-11-25"));
+        assert!(!valid_timestamp("t"));
     }
 
     #[test]

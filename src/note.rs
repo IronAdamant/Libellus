@@ -66,6 +66,9 @@ fn validate_line(label: &str, s: &str, suggest_body: bool) -> Result<(), String>
     if s.contains('\n') || s.contains('\r') {
         return Err(format!("{label} must be one line"));
     }
+    if s.chars().any(|c| c.is_control()) {
+        return Err(format!("{label} contains a control character"));
+    }
     if s.chars().count() > MAX_SUMMARY {
         let extra = if suggest_body {
             "; put the detail in the body"
@@ -244,9 +247,10 @@ impl Note {
                 "bad evidence pointer \"{bad}\" (use tool:reference)"
             ));
         }
-        let tags = list("tags")?;
-        if let Some(bad) = tags.iter().find(|t| !fsx::valid_slug(t)) {
-            return Err(format!("bad tag \"{bad}\""));
+        let tags = dedupe_tags(list("tags")?)?;
+        let created = need("created")?;
+        if !fsx::valid_timestamp(&created) {
+            return Err(format!("created \"{created}\" is not YYYY-MM-DDTHH:MM:SSZ"));
         }
         let body_start = consumed.min(text.len());
         let body = text[body_start..].trim_matches('\n').to_string();
@@ -256,7 +260,7 @@ impl Note {
             status,
             summary,
             agent: need("agent")?,
-            created: need("created")?,
+            created,
             evidence,
             tags,
             promoted: get("promoted").filter(|p| !p.is_empty()),
@@ -271,14 +275,14 @@ impl Note {
 pub fn load_all(store: &Store, agent: &str) -> Result<Loaded, String> {
     let dir = store.notes_dir(agent)?;
     let mut ids = Vec::new();
-    collect(&dir, &dir, &mut ids)?;
+    let mut warnings = Vec::new();
+    collect(&dir, &dir, &mut ids, &mut warnings)?;
     let mut notes = if ids.len() < 128 {
         read_notes(&ids)?
     } else {
         read_notes_parallel(&ids)?
     };
     notes.sort_by(|a, b| a.created.cmp(&b.created).then(a.id.cmp(&b.id)));
-    let mut warnings = Vec::new();
     notes.retain(|note| {
         if note.agent == agent {
             true
@@ -306,6 +310,22 @@ fn reject_huge_note(path: &Path) -> Result<(), String> {
 
 fn read_one(id: &str, path: &Path) -> Result<Note, String> {
     reject_huge_note(path)?;
+    match fsx::file_kind(path)? {
+        fsx::FileKind::Regular { .. } => {}
+        fsx::FileKind::Symlink => {
+            return Err(format!(
+                "{} is a symlink; refusing to follow it",
+                path.display()
+            ))
+        }
+        fsx::FileKind::Missing => return Err(format!("cannot read {}: not found", path.display())),
+        fsx::FileKind::Other => {
+            return Err(format!(
+                "{} is not a regular file; refusing to open it",
+                path.display()
+            ))
+        }
+    }
     let text = fsx::read_strict(path)?;
     Note::parse(id, &text).map_err(|e| format!("corrupt note {id} ({}): {e}", path.display()))
 }
@@ -343,10 +363,30 @@ fn read_notes_parallel(ids: &[(String, std::path::PathBuf)]) -> Result<Vec<Note>
     Ok(notes)
 }
 
+/// One or two slug segments, the same ids `libellus_get` will open.
+pub fn valid_note_id(id: &str) -> bool {
+    let segs: Vec<&str> = id.split('/').collect();
+    (1..=2).contains(&segs.len()) && segs.iter().all(|s| fsx::valid_slug(s))
+}
+
+fn dedupe_tags(tags: Vec<String>) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for tag in tags {
+        if !fsx::valid_slug(&tag) {
+            return Err(format!("bad tag \"{tag}\""));
+        }
+        if !out.contains(&tag) {
+            out.push(tag);
+        }
+    }
+    Ok(out)
+}
+
 fn collect(
     base: &Path,
     dir: &Path,
     out: &mut Vec<(String, std::path::PathBuf)>,
+    warnings: &mut Vec<String>,
 ) -> Result<(), String> {
     let rd = match fs::read_dir(dir) {
         Ok(r) => r,
@@ -370,8 +410,14 @@ fn collect(
             ));
         }
         if ft.is_dir() {
-            collect(base, &path, out)?;
-        } else if let Some(stem) = name.strip_suffix(".md") {
+            collect(base, &path, out, warnings)?;
+            continue;
+        }
+        if !ft.is_file() {
+            warnings.push(format!("skipped {}: not a regular file", path.display()));
+            continue;
+        }
+        if let Some(stem) = name.strip_suffix(".md") {
             let rel = path
                 .parent()
                 .unwrap_or(base)
@@ -383,6 +429,13 @@ fn collect(
             } else {
                 format!("{rel}/{stem}")
             };
+            if !valid_note_id(&id) {
+                warnings.push(format!(
+                    "skipped {}: \"{id}\" is not an id libellus_get can open (one or two slugs)",
+                    path.display()
+                ));
+                continue;
+            }
             out.push((id, path));
         } else {
             return Err(format!(
@@ -432,6 +485,17 @@ mod tests {
         assert!(Note::parse("x", &ok.replace("trammel:plan-3/step-2", "no pointer")).is_err());
         assert!(Note::parse("x", "no frontmatter").is_err());
         assert!(Note::parse("x", "---\nkind: question\n").is_err());
+        assert!(Note::parse(
+            "x",
+            &ok.replace("created: 2026-11-25T00:00:00Z", "created: yesterday")
+        )
+        .is_err());
+        let dup = ok.replace("tags: [net]", "tags: [net, net]");
+        assert_eq!(
+            Note::parse("x", &dup).unwrap().tags,
+            vec!["net".to_string()]
+        );
+        assert!(validate_summary("bell\u{0007}").is_err());
     }
 
     #[test]

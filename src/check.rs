@@ -14,7 +14,9 @@ pub fn run() -> Result<Value, String> {
     for agent in store.agents()? {
         let loaded = note::load_all(&store, &agent)?;
         problems.extend(loaded.warnings);
-        let entries = ledger::read(&store, &agent)?;
+        let ledger_read = ledger::read(&store, &agent)?;
+        problems.extend(ledger_read.warnings);
+        let entries = ledger_read.entries;
         let (_totals, bad) = ledger::sum_prefix(&entries);
         if let Some(line) = bad {
             let path = store.ledger_path(&agent)?;
@@ -30,6 +32,7 @@ pub fn run() -> Result<Value, String> {
         ]));
         find_temps(&store.agent_dir(&agent)?, &mut strays);
     }
+    problems.extend(fsx::stale_lock_notes(&store.dir));
     if !problems.is_empty() {
         return Err(problems.join("; "));
     }

@@ -2,22 +2,34 @@
 
 ## Project overview
 
-**Libellus** 1.1.1 is a std-only Rust binary (`libellus`, `libellus-mcp`): a private
-notepad and number ledger for each AI agent. It does not call an LLM. 1.0.0 and
-1.1.0 are tagged releases.
+**Libellus** 1.1.2 is a std-only Rust binary (`libellus`, `libellus-mcp`): a private
+notepad and number ledger for each AI agent. It does not call an LLM. 1.0.0,
+1.1.0 and 1.1.1 are tagged releases.
 
 **Guidelines:** No third-party crates. `[dependencies]`, `[dev-dependencies]` and
 `[build-dependencies]` stay empty. No new TODO or FIXME markers in `src/`.
 
 ## Active context
 
-- **Version:** 1.1.1 in the tree. 1.0.0 and 1.1.0 are GitHub releases.
+- **Version:** 1.1.2 in the tree. 1.0.0, 1.1.0 and 1.1.1 are GitHub releases.
   The release workflow publishes archives on `v*`. Not on crates.io or npm.
 - **Built:** note, get, resolve, ls, brief, promote, spend, ledger; `libellus hook`;
   `LIBELLUS_TOOLS`, `LIBELLUS_DISABLE`, `LIBELLUS_AGENT`.
 - **Not in this tree:** npm packages, an MCP Registry entry.
 
 ## Session log
+
+---
+
+## 1.1.2: third verification pass
+
+**Date:** 2026-11-25
+
+- Refused fifos and symlink ledgers. Spend reads the ledger once under the lock.
+- Measured spend at 10000 entries: median 14969 us, p95 15455 us, against the
+  1.0.0 baseline of 20240 / 21385 us. Numbers are in `docs/perf/1.1.2.md`.
+- Note ids, dates, ledger lines, torn lines, size caps, flag syntax, directory
+  mode, stale locks, and the MCP version field match the checks in `tests/verify3.rs`.
 
 ---
 

@@ -116,7 +116,7 @@ fn ledger_sums_every_agent_and_a_damaged_file_stays_damaged() {
     assert_eq!(fs::read_to_string(&path).unwrap(), damaged);
 
     let huge = format!(
-        "{{\"ts\":\"t\",\"agent\":\"sub-2\",\"task\":\"retry\",\"tokens_in\":{},\"tokens_out\":0,\"cost_micro_usd\":0}}\n{{\"ts\":\"t\",\"agent\":\"sub-2\",\"task\":\"retry\",\"tokens_in\":1,\"tokens_out\":0,\"cost_micro_usd\":0}}\n",
+        "{{\"ts\":\"2026-11-25T00:00:00Z\",\"agent\":\"sub-2\",\"task\":\"retry\",\"tokens_in\":{},\"tokens_out\":0,\"cost_micro_usd\":0}}\n{{\"ts\":\"2026-11-25T00:00:01Z\",\"agent\":\"sub-2\",\"task\":\"retry\",\"tokens_in\":1,\"tokens_out\":0,\"cost_micro_usd\":0}}\n",
         u64::MAX
     );
     let other = dir.join(".libellus/agents/sub-2/ledger.jsonl");

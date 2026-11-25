@@ -33,7 +33,9 @@ USAGE
 LIBELLUS_AGENT supplies --agent when a command requires one and the flag is omitted.
 libellus ledger does not use it: with no --agent it sums every agent.
 
-Output is JSON; the exit code is 1 on any error, 2 on a usage error.";
+Output is JSON; the exit code is 1 on any error, 2 on a usage error.
+Flags accept --name value and --name=value. A value that starts with -- is
+written --name -- --value.";
 
 pub fn run(args: &[String], as_mcp: bool) -> i32 {
     if as_mcp {
@@ -148,63 +150,97 @@ fn build_args(tool: &Tool, argv: &[String]) -> Result<Value, String> {
     let mut pairs: Vec<(String, Value)> = Vec::new();
     let mut i = 0;
     while i < argv.len() {
-        let flag = argv[i].strip_prefix("--").ok_or_else(|| {
-            format!(
-                "unexpected argument \"{}\"; flags look like --name value",
-                argv[i]
-            )
-        })?;
-        let flag = flag.replace('-', "_");
+        if argv[i] == "--" {
+            return Err("\"--\" must sit between a flag and a value that starts with --".into());
+        }
+        let (name, inline) = split_flag(&argv[i])?;
+        let flag = name.replace('-', "_");
         let Some(param) = tool.params.iter().find(|p| p.name == flag) else {
             return Err(format!("unknown flag --{}", flag.replace('_', "-")));
         };
-        let kind = param.kind;
-        let value = argv.get(i + 1).filter(|v| !v.starts_with("--"));
-        match (kind, value) {
+        let (value, step) = flag_value(argv, i, param.kind, inline)?;
+        let shown = argv[i]
+            .trim_start_matches("--")
+            .split('=')
+            .next()
+            .unwrap_or(&flag);
+        match (param.kind, value) {
+            (Kind::Bool, None) => {
+                pairs.push((flag, Value::Bool(true)));
+            }
             (Kind::Bool, Some(v)) if v == "true" || v == "false" => {
                 pairs.push((flag, Value::Bool(v == "true")));
-                i += 2;
             }
-            (Kind::Bool, _) => {
-                pairs.push((flag, Value::Bool(true)));
-                i += 1;
+            (Kind::Bool, Some(v)) => {
+                return Err(format!("--{shown} must be true or false, got \"{v}\""));
             }
-            (_, None) => {
-                return Err(format!(
-                    "--{} needs a value",
-                    argv[i].trim_start_matches("--")
-                ))
-            }
+            (_, None) => return Err(format!("--{shown} needs a value")),
             (Kind::UInt, Some(v)) => {
-                let n: u64 = v.parse().map_err(|_| {
-                    format!(
-                        "--{} must be a whole number, got \"{v}\"",
-                        argv[i].trim_start_matches("--")
-                    )
-                })?;
+                let n: u64 = v
+                    .parse()
+                    .map_err(|_| format!("--{shown} must be a whole number, got \"{v}\""))?;
                 pairs.push((flag, Value::uint(n)));
-                i += 2;
             }
-            (Kind::StrList, Some(v)) => {
-                match pairs.iter_mut().find(|(k, _)| *k == flag) {
-                    Some((_, Value::Array(items))) => items.push(Value::str(v.as_str())),
-                    _ => pairs.push((flag, Value::Array(vec![Value::str(v.as_str())]))),
-                }
-                i += 2;
-            }
+            (Kind::StrList, Some(v)) => match pairs.iter_mut().find(|(k, _)| *k == flag) {
+                Some((_, Value::Array(items))) => items.push(Value::str(v.as_str())),
+                _ => pairs.push((flag, Value::Array(vec![Value::str(v.as_str())]))),
+            },
             (Kind::Str, Some(v)) => {
                 if pairs.iter().any(|(k, _)| *k == flag) {
-                    return Err(format!(
-                        "--{} given twice",
-                        argv[i].trim_start_matches("--")
-                    ));
+                    return Err(format!("--{shown} given twice"));
                 }
                 pairs.push((flag, Value::str(v.as_str())));
-                i += 2;
             }
         }
+        i += step;
     }
     Ok(Value::Object(pairs))
+}
+
+/// `--name`, `--name=value`, or `--name -- value`. `step` is how many argv
+/// entries this flag consumed, including itself.
+fn flag_value(
+    argv: &[String],
+    i: usize,
+    kind: Kind,
+    inline: Option<&str>,
+) -> Result<(Option<String>, usize), String> {
+    if let Some(v) = inline {
+        return Ok((Some(v.to_string()), 1));
+    }
+    if kind == Kind::Bool {
+        return Ok((None, 1));
+    }
+    match argv.get(i + 1).map(String::as_str) {
+        Some("--") => {
+            let value = argv.get(i + 2).ok_or_else(|| {
+                format!(
+                    "--{} needs a value after --",
+                    argv[i].trim_start_matches("--")
+                )
+            })?;
+            Ok((Some(value.clone()), 3))
+        }
+        Some(v) if !v.starts_with("--") => Ok((Some(v.to_string()), 2)),
+        _ => Ok((None, 1)),
+    }
+}
+
+fn split_flag(token: &str) -> Result<(&str, Option<&str>), String> {
+    let rest = token
+        .strip_prefix("--")
+        .ok_or_else(|| format!("unexpected argument \"{token}\"; flags look like --name value"))?;
+    if rest.is_empty() {
+        return Err("unexpected argument \"--\"".into());
+    }
+    if let Some((name, value)) = rest.split_once('=') {
+        if name.is_empty() {
+            return Err(format!("unknown flag --={value}"));
+        }
+        Ok((name, Some(value)))
+    } else {
+        Ok((rest, None))
+    }
 }
 
 /// `--host` is a CLI presentation flag for `brief`, not an MCP argument.
@@ -213,19 +249,29 @@ fn split_brief_host(argv: &[String]) -> Result<(Vec<String>, Option<String>), St
     let mut host = None;
     let mut i = 0;
     while i < argv.len() {
-        if argv[i] == "--host" {
-            let value = argv
-                .get(i + 1)
-                .filter(|v| !v.starts_with("--"))
-                .ok_or_else(|| "--host needs a value".to_string())?;
+        if argv[i] == "--host" || argv[i].starts_with("--host=") {
+            let (value, step) = if let Some(v) = argv[i].strip_prefix("--host=") {
+                (v.to_string(), 1)
+            } else if argv.get(i + 1).is_some_and(|v| v == "--") {
+                let v = argv
+                    .get(i + 2)
+                    .ok_or_else(|| "--host needs a value after --".to_string())?;
+                (v.clone(), 3)
+            } else {
+                let v = argv
+                    .get(i + 1)
+                    .filter(|v| !v.starts_with("--"))
+                    .ok_or_else(|| "--host needs a value".to_string())?;
+                (v.clone(), 2)
+            };
             if value != "text" && value != "cursor" {
                 return Err(format!("--host must be text or cursor, got \"{value}\""));
             }
             if host.is_some() {
                 return Err("--host given twice".into());
             }
-            host = Some(value.to_string());
-            i += 2;
+            host = Some(value);
+            i += step;
         } else {
             rest.push(argv[i].clone());
             i += 1;

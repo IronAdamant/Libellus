@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.1.2
+
+Same on-disk format for a valid store. A note or ledger line that was already
+invalid is no longer treated as good data.
+
+- A fifo or other non-regular file in the notes folder is skipped, with a
+  warning. `check` reports it. It is not opened. A symlink `ledger.jsonl`, and
+  any other symlink store file, is refused on read and on write.
+- `spend` reads the ledger once under its lock. On this machine, with the
+  `examples/perf.rs` harness, a spend against 10000 stored entries was median
+  14969 us and p95 15455 us. The 1.0.0 baseline on the same harness was 20240
+  us and 21385 us. See `docs/perf/1.1.2.md`.
+- A note file whose name is not one or two slugs is skipped by `ls` and
+  `brief` and failed by `check`. `created` must be `YYYY-MM-DDTHH:MM:SSZ`.
+- A ledger line with the wrong agent, a non-slug task or step, or a bad
+  timestamp is left out of the totals and named by `check`. A torn last line
+  is not counted. `spend` will not append until that line is finished or
+  deleted. A ledger over 32 MiB, or a line over 64 KiB, is an error.
+- An id made from the summary is retried when the file already exists.
+  `--flag=value` works, and `--flag -- --value` passes a value that starts
+  with `--`. `limit` errors say the range starts at 1. On Unix, new
+  `.libellus` and `agents` directories are mode 0700.
+- The body argument is at most 20000 bytes. The brief text does not always
+  end with a Next line. `libellus_check` is in the core group. `check` reports
+  a stale lock and says to remove that file if nothing is using it. A summary
+  cannot contain a control character. Duplicate tags are stored once. An MCP
+  message must say `"jsonrpc":"2.0"`. `LIBELLUS_DIR` must already be an
+  initialised store.
+
 ## 1.1.1
 
 No behaviour changes. Same on-disk format as 1.0.0.
@@ -30,8 +59,8 @@ Same on-disk format as 1.0.0.
   `get`, and failed by `check`.
 - Unknown CLI flags are reported as `unknown flag`. `libellus_check` is an
   MCP tool. `--host` on `brief` is CLI only.
-- Listing and the brief read many notes at once on more than one CPU. A spend
-  does not parse the ledger a second time. Numbers are in `docs/perf/`.
+- Listing and the brief read many notes at once on more than one CPU. Numbers
+  are in `docs/perf/`. A spend still read the ledger twice; 1.1.2 reads it once.
 
 ## 1.0.0
 

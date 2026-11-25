@@ -289,10 +289,12 @@ fn concurrent_spends_all_land_and_each_total_includes_itself() {
         u.dedup();
         u
     };
+    let text = fs::read_to_string(dir.join(".libellus/agents/main/ledger.jsonl")).unwrap();
     assert_eq!(
         unique.len(),
         counts.len(),
-        "agent_total.entries collided: {counts:?}"
+        "agent_total.entries collided: {counts:?} file_lines={}",
+        text.lines().count()
     );
     assert_eq!(counts, (1..=counts.len() as u64).collect::<Vec<_>>());
     let text = fs::read_to_string(dir.join(".libellus/agents/main/ledger.jsonl")).unwrap();
