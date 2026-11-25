@@ -74,9 +74,15 @@ jobs:
              "target/${TARGET}/release/libellus-mcp${ext}" \
              "dist/${name}/"
           if [ "${ARCHIVE}" = "zip" ]; then
-            # Windows tar.exe is bsdtar. Entry names use forward slashes.
-            # Compress-Archive writes backslashes, which breaks unzip on Unix.
-            (cd dist && tar.exe -a -cf "../release-asset/${name}.zip" "${name}")
+            # pwsh 7 Compress-Archive writes a real zip and stores '/' in
+            # entry names. Windows PowerShell 5.1 stores '\', which breaks
+            # unzip on Unix. tar.exe on this runner is GNU tar and writes a
+            # tar archive even when the file name ends in .zip.
+            if ! command -v pwsh >/dev/null 2>&1; then
+              echo "pwsh 7 is not on PATH"
+              exit 1
+            fi
+            pwsh -NoProfile -NonInteractive -Command "\$ErrorActionPreference = 'Stop'; Compress-Archive -LiteralPath 'dist/${name}' -DestinationPath 'release-asset/${name}.zip'"
           else
             tar -C dist -czf "release-asset/${name}.tar.gz" "${name}"
           fi
@@ -125,6 +131,49 @@ jobs:
             exit 1
           fi
           cat notes.md
+
+      - name: Check the Windows zip
+        run: |
+          set -euo pipefail
+          cd dist
+          shopt -s nullglob
+          zips=( *.zip )
+          if [ "${#zips[@]}" -eq 0 ]; then
+            echo "no Windows zip to publish"
+            exit 1
+          fi
+          python3 - "${zips[@]}" <<'PY'
+          import sys
+          import zipfile
+
+          for path in sys.argv[1:]:
+              with open(path, "rb") as handle:
+                  magic = handle.read(4)
+              if magic != b"PK\x03\x04":
+                  shown = magic.hex() if magic else "empty"
+                  sys.exit(
+                      path
+                      + " does not start with the PK zip signature (got "
+                      + shown
+                      + ")"
+                  )
+              with zipfile.ZipFile(path) as archive:
+                  names = archive.namelist()
+              print("entries in " + path + ":")
+              for name in names:
+                  print(name)
+              stem = path[:-4]
+              expected = {
+                  stem + "/libellus.exe",
+                  stem + "/libellus-mcp.exe",
+              }
+              optional = {stem + "/"}
+              got = set(names)
+              if any("\\" in name for name in names):
+                  sys.exit(path + " has a backslash in an entry name")
+              if not expected <= got <= expected | optional:
+                  sys.exit(path + " entries must be the two Windows binaries")
+          PY
 
       - name: Publish the release
         env:
