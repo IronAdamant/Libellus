@@ -35,7 +35,7 @@ pub static TOOLS: &[Tool] = &[
             AGENT,
             Param { name: "kind", kind: Kind::Str, required: true, doc: "What the note is.", choices: note::KINDS },
             Param { name: "summary", kind: Kind::Str, required: true, doc: "One line, up to 200 characters.", choices: &[] },
-            Param { name: "body", kind: Kind::Str, required: false, doc: "The detail, under about 300 words.", choices: &[] },
+            Param { name: "body", kind: Kind::Str, required: false, doc: "The detail, under about 300 words, at most 20000 bytes.", choices: &[] },
             Param { name: "id", kind: Kind::Str, required: false, doc: "Slug, up to two segments (retry/post-question). Made from the summary if absent. Never overwrites.", choices: &[] },
             Param { name: "status", kind: Kind::Str, required: false, doc: "open or resolved. Default: open for a question, resolved otherwise.", choices: note::STATUSES },
             Param { name: "evidence", kind: Kind::StrList, required: false, doc: "Pointers to proof, each tool:reference (trammel:plan-3/step-2). No copies.", choices: &[] },
@@ -85,7 +85,7 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_brief",
         group: "core",
-        description: "Call this when a session starts and after compaction, before other work. Returns open questions, recent decisions, dead ends, costs, and a short text you can paste back. The text ends with one Next line.",
+        description: "Call this when a session starts and after compaction, before other work. Returns open questions, recent decisions, dead ends, costs, and a short text you can paste back. A Next line is added only when a question is open or a decision or dead end is not promoted.",
         params: &[
             AGENT,
             Param { name: "max_items", kind: Kind::UInt, required: false, doc: "Most notes per section. Default 5.", choices: &[] },
@@ -145,7 +145,7 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_check",
         group: "core",
-        description: "Read every note and ledger. Fails if a file is damaged, a note is over the size cap, a total overflows, or a note's agent field does not match its folder.",
+        description: "Read every note and ledger. Fails if a file is damaged, a note is over the size cap, a total overflows, a note's agent field does not match its folder, a ledger line was left out, or a stale lock is left behind.",
         params: &[],
         run: check_tool,
     },
@@ -164,53 +164,72 @@ fn note_add(a: &Args) -> Result<Value, String> {
             fsx::clip(bad, 60)
         ));
     }
-    let tags: Vec<String> = a.list("tags").iter().map(|s| s.to_string()).collect();
+    let mut tags: Vec<String> = a.list("tags").iter().map(|s| s.to_string()).collect();
     if let Some(bad) = tags.iter().find(|t| !fsx::valid_slug(t)) {
         return Err(format!("bad tag \"{}\": use a slug", fsx::clip(bad, 40)));
     }
-    let notes_dir = store.notes_dir(agent)?;
-    let id = match a.str("id") {
-        Some(id) => id.to_string(),
-        None => unique_id(&notes_dir, summary)?,
-    };
-    let path = fsx::join_id(&notes_dir, &id, 2)?.with_extension("md");
-    if let Some(dir) = path.parent() {
-        fsx::make_private_dir(dir)?;
-    }
-    let n = Note {
-        id: id.clone(),
-        kind: kind.to_string(),
-        status: a
-            .str("status")
-            .unwrap_or(if kind == "question" {
-                "open"
-            } else {
-                "resolved"
-            })
-            .to_string(),
-        summary: summary.to_string(),
-        agent: agent.to_string(),
-        created: fsx::now_iso(),
-        evidence,
-        tags,
-        promoted: None,
-        body: a.str("body").unwrap_or_default().to_string(),
-    };
-    fsx::write_atomic(&path, n.render().as_bytes(), false).map_err(|e| {
-        if e.contains("already exists") {
-            format!("note \"{id}\" already exists. Read it with libellus_get, or pass a new id.")
+    let mut seen_tags = Vec::new();
+    tags.retain(|tag| {
+        if seen_tags.contains(tag) {
+            false
         } else {
-            format!("note \"{id}\" not written: {e}")
+            seen_tags.push(tag.clone());
+            true
         }
-    })?;
-    Ok(Value::obj(vec![
-        ("id", Value::String(id)),
-        ("kind", Value::str(kind)),
-        ("status", Value::String(n.status)),
-    ]))
+    });
+    let notes_dir = store.notes_dir(agent)?;
+    let given = a.str("id").map(str::to_string);
+    let attempts: u32 = if given.is_some() { 1 } else { 999 };
+    for ntry in 1..=attempts {
+        let id = match &given {
+            Some(id) => id.clone(),
+            None => candidate_id(summary, ntry),
+        };
+        let path = fsx::join_id(&notes_dir, &id, 2)?.with_extension("md");
+        if let Some(dir) = path.parent() {
+            fsx::make_private_dir(dir)?;
+        }
+        fsx::refuse_special(&path)?;
+        let n = Note {
+            id: id.clone(),
+            kind: kind.to_string(),
+            status: a
+                .str("status")
+                .unwrap_or(if kind == "question" {
+                    "open"
+                } else {
+                    "resolved"
+                })
+                .to_string(),
+            summary: summary.to_string(),
+            agent: agent.to_string(),
+            created: fsx::now_iso(),
+            evidence: evidence.clone(),
+            tags: tags.clone(),
+            promoted: None,
+            body: a.str("body").unwrap_or_default().to_string(),
+        };
+        match fsx::write_atomic(&path, n.render().as_bytes(), false) {
+            Ok(()) => {
+                return Ok(Value::obj(vec![
+                    ("id", Value::String(id)),
+                    ("kind", Value::str(kind)),
+                    ("status", Value::String(n.status)),
+                ]));
+            }
+            Err(e) if given.is_none() && e.contains("already exists") => continue,
+            Err(e) if e.contains("already exists") => {
+                return Err(format!(
+                    "note \"{id}\" already exists. Read it with libellus_get, or pass a new id."
+                ));
+            }
+            Err(e) => return Err(format!("note \"{id}\" not written: {e}")),
+        }
+    }
+    Err("could not find a free id; pass id".into())
 }
 
-fn unique_id(dir: &std::path::Path, summary: &str) -> Result<String, String> {
+fn candidate_id(summary: &str, n: u32) -> String {
     let mut slug: String = summary
         .to_lowercase()
         .chars()
@@ -227,17 +246,11 @@ fn unique_id(dir: &std::path::Path, summary: &str) -> Result<String, String> {
     } else {
         slug
     };
-    for n in 1..1000 {
-        let id = if n == 1 {
-            slug.clone()
-        } else {
-            format!("{slug}-{n}")
-        };
-        if !dir.join(format!("{id}.md")).exists() {
-            return Ok(id);
-        }
+    if n <= 1 {
+        slug
+    } else {
+        format!("{slug}-{n}")
     }
-    Err("could not find a free id; pass id".into())
 }
 
 fn note_get(a: &Args) -> Result<Value, String> {
@@ -403,7 +416,11 @@ fn brief(a: &Args) -> Result<Value, String> {
     let max = a.uint("max_items").unwrap_or(5) as usize;
     let loaded = note::load_all(&store, agent)?;
     let notes = loaded.notes;
-    let (entries, totals, overflow_line) = ledger::read_summed(&store, agent)?;
+    let summed = ledger::read_summed(&store, agent)?;
+    let entries = summed.entries;
+    let totals = summed.totals;
+    let overflow_line = summed.overflow_line;
+    let ledger_warnings = summed.warnings;
     let tasks = ledger::by_task(&entries)?;
     let ledger_error = overflow_line.map(|line| {
         format!(
@@ -470,7 +487,7 @@ fn brief(a: &Args) -> Result<Value, String> {
         text.push_str(&next_bits.join("; "));
         text.push_str(".\n");
     }
-    for warning in &loaded.warnings {
+    for warning in loaded.warnings.iter().chain(ledger_warnings.iter()) {
         text.push_str(&format!("\nWarning: {warning}\n"));
     }
     if let Some(err) = &ledger_error {
@@ -502,10 +519,12 @@ fn brief(a: &Args) -> Result<Value, String> {
     if let Some(err) = ledger_error {
         pairs.push(("ledger_error".to_string(), Value::String(err)));
     }
-    if !loaded.warnings.is_empty() {
+    let mut warnings = loaded.warnings;
+    warnings.extend(ledger_warnings);
+    if !warnings.is_empty() {
         pairs.push((
             "warnings".to_string(),
-            Value::Array(loaded.warnings.iter().map(Value::str).collect()),
+            Value::Array(warnings.iter().map(Value::str).collect()),
         ));
     }
     Ok(Value::Object(pairs))

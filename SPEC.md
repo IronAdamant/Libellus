@@ -2,7 +2,7 @@
 
 Libellus is a private notepad and number ledger per agent. The files are the
 product. The CLI and the MCP server are conveniences over them, and any agent
-that can read and write files can use the store without either. Libellus 1.1.1
+that can read and write files can use the store without either. Libellus 1.1.2
 reads and writes the same files as 1.0.0.
 
 ## 1. Layout
@@ -14,13 +14,16 @@ reads and writes the same files as 1.0.0.
 ```
 
 - The store is the nearest `.libellus/` walking up from the working directory,
-  or the folder named by `$LIBELLUS_DIR`. `libellus init` creates it. No tool
-  creates a store by accident: with none found, calls fail and say so.
+  or the folder named by `$LIBELLUS_DIR`. `libellus init` creates it. A folder
+  set as `LIBELLUS_DIR` with no `agents` directory is not a store: calls fail
+  and say to run `libellus init`. No tool creates a store by accident.
 - `<agent>` and every id segment are slugs: `[a-z0-9][a-z0-9-]*`, at most 64
   bytes. An id has at most two segments (`retry/post-question`).
 - On Unix the folders are created mode 0700 and files 0600.
-- A path component that is a symlink is refused. A file that is not a note in
-  the notes folder is an error.
+- A path component that is a symlink is refused, including `ledger.jsonl`.
+  A regular file that is not a note in the notes folder is an error. A fifo
+  or other non-regular file is not opened: `ls` and `brief` skip it and warn,
+  and `check` reports it.
 
 ## 2. Notes
 
@@ -51,13 +54,18 @@ Frontmatter is a flat subset of YAML (`key: value`, lists written `[a, b]`).
 | `tags` | no | Slugs |
 | `promoted` | no | Relatum note id written by `libellus_promote` |
 
-An unknown key, a duplicate key, a bad pointer, a bad tag, a missing field or an
-unclosed frontmatter is an error naming the file. A note file over 1 MiB is an
-error naming the file. Creating an id that exists fails. `libellus_get`
+An unknown key, a duplicate key, a bad pointer, a bad tag, a missing field, a
+`created` value that is not `YYYY-MM-DDTHH:MM:SSZ`, or an unclosed frontmatter
+is an error naming the file. A repeated tag is stored once. A note file over
+1 MiB is an error naming the file. The `body` argument is at most 20000 bytes,
+the same cap as every other string argument. Creating an id that exists fails.
+`libellus_get`
 returns the whole body of a note under that cap. `libellus_ls` cuts a body at
 4000 characters and sets `truncated` on that note. A note whose `agent` field
 does not match the folder is skipped by `ls` and `brief` with a warning, and
-`check` reports it. `get` still refuses it.
+`check` reports it. `get` still refuses it. A note file whose name is not one
+or two slugs, and anything in the notes folder that is not a regular file
+(a fifo, for example), is skipped the same way. A symlink is still an error.
 
 `libellus_resolve` sets `status` to `resolved` and appends one line to the
 body, keeping the old body:
@@ -88,8 +96,16 @@ One JSON object per line, appended, never rewritten:
 `step`, `model` and `note` are optional. The three numbers are whole numbers
 (unsigned, up to 64 bits); `cost_micro_usd` is millionths of a US dollar. Sums use
 checked arithmetic. A spend checks the new total before it appends, and does
-not append when the total would overflow. A line that is damaged, has an unknown
-field, or a file that ends in a partial line fails every read and every append.
+not append when the total would overflow. It reads the ledger once, under the
+lock, and the returned count includes the line just written. A line that is
+not JSON, or that has an unknown field, fails every read and every append.
+A line whose `agent` is not the folder, whose `task` or `step` is not a slug,
+or whose `ts` is not `YYYY-MM-DDTHH:MM:SSZ` is left out of the totals.
+`check` names that line. A file that ends in a partial line is still read:
+the torn line is not counted, `check` names it and says to finish or delete
+it, and `spend` will not append until that is done. A symlink ledger, or a
+ledger that is not a regular file, is refused for both read and append.
+A ledger over 32 MiB, or a line over 64 KiB, is an error and is not read.
 A damaged ledger is not repaired. A ledger that is intact but whose running
 total overflows is reported by `ledger` and `brief` as `ledger_error` with the
 line number; totals stop before that line. `check` fails on that ledger.
@@ -164,8 +180,11 @@ types, missing required arguments and values outside an `enum` are errors with
   line per item). The arrays are the same facts for a caller that parses
   fields. Both stay so a 1.0.0 caller keeps working.
 - `libellus_check` `{}` reads every note and ledger. It fails when a file is
-  damaged, a note is over 1 MiB, a ledger total overflows, or a note's `agent`
-  field does not match its folder.
+  damaged, a note is over 1 MiB, a ledger total overflows, a note's `agent`
+  field does not match its folder, a note id cannot be opened, a ledger line
+  was left out of the totals, a ledger ends in a partial line, or a stale
+  lock is left behind. The stale-lock error says to remove that file if no
+  libellus process is using it.
 - `libellus_promote` `{agent, id, scope}` returns `{id, promoted, relatum_kind, path}`.
 - `libellus_spend` `{agent, task, step?, model?, tokens_in?, tokens_out?,
   cost_micro_usd?, note?}` (at least one number) returns the task and agent
@@ -175,7 +194,7 @@ types, missing required arguments and values outside an `enum` are errors with
 `LIBELLUS_AGENT`, when set and non-empty, fills a required `agent` that the
 caller omitted. An explicit `agent` wins.
 
-Groups: `core` (note, get, resolve, ls, brief, promote) is always on; `ledger`
+Groups: `core` (note, get, resolve, ls, brief, promote, check) is always on; `ledger`
 (spend, ledger) can be switched off. A hidden tool's call returns `isError`.
 
 The choice is one line in the project's AGENTS.md `agent-tools` block:

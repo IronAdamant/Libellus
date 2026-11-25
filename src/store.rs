@@ -58,6 +58,15 @@ impl Store {
                 ))
             }
         }
+        match fs::symlink_metadata(dir.join("agents")) {
+            Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {}
+            _ => {
+                return Err(format!(
+                    "{} has no agents folder. Run `libellus init`",
+                    dir.display()
+                ))
+            }
+        }
         let project = dir
             .parent()
             .map(Path::to_path_buf)
@@ -106,10 +115,21 @@ impl Store {
         };
         for e in rd {
             let e = e.map_err(|e| format!("cannot read {}: {e}", base.display()))?;
-            if let Some(n) = e.file_name().to_str() {
-                if e.path().is_dir() && fsx::valid_slug(n) {
-                    out.push(n.to_string());
-                }
+            let name = e.file_name();
+            let Some(n) = name.to_str() else {
+                continue;
+            };
+            let kind = e
+                .file_type()
+                .map_err(|err| format!("cannot stat {}: {err}", e.path().display()))?;
+            if kind.is_symlink() {
+                return Err(format!(
+                    "{} is a symlink; refusing to follow it",
+                    e.path().display()
+                ));
+            }
+            if kind.is_dir() && fsx::valid_slug(n) {
+                out.push(n.to_string());
             }
         }
         out.sort();

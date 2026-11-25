@@ -221,10 +221,13 @@ fn check_value(p: &Param, v: &Value) -> Result<(), String> {
             }
             Ok(())
         }
-        (Kind::UInt, _) => Err(format!(
-            "{} must be a whole number from 0 up to 18446744073709551615",
-            p.name
-        )),
+        (Kind::UInt, _) => {
+            let least = if p.name == "limit" { 1 } else { 0 };
+            Err(format!(
+                "{} must be a whole number from {least} up to 18446744073709551615",
+                p.name
+            ))
+        }
         (Kind::Bool, Value::Bool(_)) => Ok(()),
         (Kind::Bool, _) => bad("a boolean"),
         (Kind::StrList, Value::Array(items)) => {

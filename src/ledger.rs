@@ -2,13 +2,14 @@
 //!
 //! Tokens and cost are whole numbers the agent reports (Libellus never calls a
 //! model and never guesses a price). Cost is in millionths of a US dollar so
-//! no float ever touches the sums. Reading is strict: a damaged line fails
-//! the read and names the line, it is never skipped.
+//! no float ever touches the sums. A line that is not JSON, or that has an
+//! unknown field, fails the read and names the line. A line whose agent, task
+//! or timestamp is wrong is left out of the totals and named in `warnings`.
+//! A torn last line is ignored on read and blocks the next append.
 
 use crate::fsx;
 use crate::json::{self, Value};
 use crate::store::Store;
-use std::fs;
 use std::io::Write;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,22 +120,67 @@ impl Entry {
             note: s("note"),
         })
     }
+
+    /// Why this line must not be added into `agent`'s totals.
+    fn rejected(&self, agent: &str) -> Option<String> {
+        if self.agent != agent || !fsx::valid_slug(&self.agent) {
+            return Some(format!(
+                "agent \"{}\" does not match \"{agent}\"",
+                self.agent
+            ));
+        }
+        if !fsx::valid_slug(&self.task) {
+            return Some(format!("task \"{}\" is not a slug", self.task));
+        }
+        if let Some(step) = &self.step {
+            if !fsx::valid_slug(step) {
+                return Some(format!("step \"{step}\" is not a slug"));
+            }
+        }
+        if !fsx::valid_timestamp(&self.ts) {
+            return Some(format!(
+                "timestamp \"{}\" is not YYYY-MM-DDTHH:MM:SSZ",
+                self.ts
+            ));
+        }
+        None
+    }
 }
+
+/// One ledger file after a single read. `entries` are the lines that count.
+/// `warnings` name lines that were left out. `torn` is a partial last line.
+pub struct Read {
+    pub entries: Vec<Entry>,
+    pub warnings: Vec<String>,
+    pub torn: bool,
+}
+
+/// Largest ledger file we will read, and the longest single line.
+pub const MAX_LEDGER_BYTES: u64 = 32 * 1024 * 1024;
+pub const MAX_LEDGER_LINE: usize = 64 * 1024;
 
 /// Append one entry as a single `write` of a whole line.
 ///
-/// The ledger is locked for the read, the overflow check, and the write.
-/// The new totals are checked before any byte is appended. On overflow the
-/// file is left unchanged. The returned entries include this entry.
+/// The ledger is locked for the one read, the overflow check, and the write.
+/// The new totals are checked before any byte is appended. On overflow, or
+/// when the file ends in a torn line, the file is left unchanged. The
+/// returned entries are that one read plus this entry, so the count is taken
+/// under the lock.
 pub fn append(store: &Store, entry: &Entry) -> Result<Vec<Entry>, String> {
     let path = store.ledger_path(&entry.agent)?;
     if let Some(dir) = path.parent() {
         fsx::make_private_dir(dir)?;
     }
     let _lock = fsx::Lock::acquire(&path)?;
-    // Refuse to extend a ledger that is already damaged or already unsummable.
+    fsx::refuse_special(&path)?;
     let existing = read(store, &entry.agent)?;
-    let (so_far, bad) = sum_prefix(&existing);
+    if existing.torn {
+        return Err(format!(
+            "not appended: {} ends in a partial line. Finish that line with a newline, or delete it. The file was not changed.",
+            path.display()
+        ));
+    }
+    let (so_far, bad) = sum_prefix(&existing.entries);
     if let Some(line) = bad {
         return Err(format!(
             "not appended: {} line {line}: ledger totals overflowed a 64-bit number. The file was not changed.",
@@ -155,46 +201,110 @@ pub fn append(store: &Store, entry: &Entry) -> Result<Vec<Entry>, String> {
         .map_err(|e| format!("cannot append to {}: {e}", path.display()))?;
     f.sync_all()
         .map_err(|e| format!("cannot sync {}: {e}", path.display()))?;
-    // Re-read before releasing the lock so the count is the file, not a
-    // guess taken beside another writer.
-    read(store, &entry.agent)
+    let mut entries = existing.entries;
+    entries.push(entry.clone());
+    Ok(entries)
+}
+
+/// A ledger read, summed. `overflow_line` is the first entry that does not fit.
+pub struct Summed {
+    pub entries: Vec<Entry>,
+    pub totals: Totals,
+    pub overflow_line: Option<usize>,
+    pub warnings: Vec<String>,
 }
 
 /// Read a ledger and sum what fits. A corrupt line is still a hard error.
 /// An overflow is reported as `overflow_line` (1-based) and the entries stop
-/// before that line.
-pub fn read_summed(
-    store: &Store,
-    agent: &str,
-) -> Result<(Vec<Entry>, Totals, Option<usize>), String> {
-    let entries = read(store, agent)?;
-    let (totals, bad) = sum_prefix(&entries);
-    let kept = match bad {
-        Some(line) => entries[..line - 1].to_vec(),
-        None => entries,
+/// before that line. `warnings` are lines left out of the totals.
+pub fn read_summed(store: &Store, agent: &str) -> Result<Summed, String> {
+    let read = read(store, agent)?;
+    let (totals, overflow_line) = sum_prefix(&read.entries);
+    let entries = match overflow_line {
+        Some(line) => read.entries[..line - 1].to_vec(),
+        None => read.entries,
     };
-    Ok((kept, totals, bad))
+    Ok(Summed {
+        entries,
+        totals,
+        overflow_line,
+        warnings: read.warnings,
+    })
 }
 
-pub fn read(store: &Store, agent: &str) -> Result<Vec<Entry>, String> {
+pub fn read(store: &Store, agent: &str) -> Result<Read, String> {
     let path = store.ledger_path(agent)?;
-    let text = match fs::metadata(&path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        _ => fsx::read_strict(&path)?,
+    let text = match fsx::file_kind(&path)? {
+        fsx::FileKind::Missing => {
+            return Ok(Read {
+                entries: Vec::new(),
+                warnings: Vec::new(),
+                torn: false,
+            })
+        }
+        fsx::FileKind::Symlink => {
+            return Err(format!(
+                "{} is a symlink; refusing to follow it",
+                path.display()
+            ))
+        }
+        fsx::FileKind::Other => {
+            return Err(format!(
+                "{} is not a regular file; refusing to open it",
+                path.display()
+            ))
+        }
+        fsx::FileKind::Regular { len } if len > MAX_LEDGER_BYTES => {
+            return Err(format!(
+                "ledger {} is {len} bytes, over the {MAX_LEDGER_BYTES} byte cap",
+                path.display()
+            ))
+        }
+        fsx::FileKind::Regular { .. } => fsx::read_strict(&path)?,
     };
-    if !text.is_empty() && !text.ends_with('\n') {
-        return Err(format!(
-            "{} ends in a partial line; refusing to read past it",
+    parse_text(&path, agent, &text)
+}
+
+fn parse_text(path: &std::path::Path, agent: &str, text: &str) -> Result<Read, String> {
+    let torn = !text.is_empty() && !text.ends_with('\n');
+    let mut lines: Vec<&str> = text.lines().collect();
+    if torn {
+        lines.pop();
+    }
+    let mut entries = Vec::new();
+    let mut warnings = Vec::new();
+    if torn {
+        warnings.push(format!(
+            "ledger {} ends in a partial line. Finish that line with a newline, or delete it. It was not counted.",
             path.display()
         ));
     }
-    text.lines()
-        .enumerate()
-        .map(|(i, l)| {
-            Entry::from_line(l)
-                .map_err(|e| format!("corrupt ledger {} line {}: {e}", path.display(), i + 1))
-        })
-        .collect()
+    for (i, line) in lines.iter().enumerate() {
+        if line.len() > MAX_LEDGER_LINE {
+            return Err(format!(
+                "ledger {} line {} is {} bytes, over the {MAX_LEDGER_LINE} byte line cap",
+                path.display(),
+                i + 1,
+                line.len()
+            ));
+        }
+        let entry = Entry::from_line(line)
+            .map_err(|e| format!("corrupt ledger {} line {}: {e}", path.display(), i + 1))?;
+        if let Some(why) = entry.rejected(agent) {
+            warnings.push(format!(
+                "ledger {} line {}: {why} It was not counted.",
+                path.display(),
+                i + 1
+            ));
+            continue;
+        }
+        entries.push(entry);
+    }
+    Ok(Read {
+        entries,
+        warnings,
+        torn,
+    })
 }
 
 pub fn total(entries: &[Entry]) -> Result<Totals, String> {

@@ -51,6 +51,8 @@ cargo build --release --locked
 
 That produces `target/release/libellus` and `target/release/libellus-mcp`
 (`libellus mcp` is the same server). `--version` prints the version.
+A flag may be `--name value` or `--name=value`. A value that itself starts
+with `--` is written `--name -- --value`.
 
 ## Usage
 

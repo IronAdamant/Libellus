@@ -84,8 +84,14 @@ pub fn report(a: &Args) -> Result<Value, String> {
     let mut entries = Vec::new();
     let mut ledger_error = None;
     for name in &agents {
-        let (mut rows, _totals, bad) = ledger::read_summed(&store, name)?;
-        if let Some(line) = bad {
+        let summed = ledger::read_summed(&store, name)?;
+        let mut rows = summed.entries;
+        if ledger_error.is_none() {
+            if let Some(warning) = summed.warnings.into_iter().next() {
+                ledger_error = Some(warning);
+            }
+        }
+        if let Some(line) = summed.overflow_line {
             let path = store.ledger_path(name)?;
             ledger_error = Some(format!(
                 "ledger {} line {line}: totals overflowed a 64-bit number. Totals stop before that line.",

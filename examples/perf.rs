@@ -285,7 +285,7 @@ fn seed_ledger(store: &Path, n: usize) -> Result<(), String> {
     }
     f.sync_all().map_err(|e| e.to_string())?;
     // The next real append must accept this file.
-    let count = ledger::read(&Store::open()?, "bench")?.len();
+    let count = ledger::read(&Store::open()?, "bench")?.entries.len();
     if count != n {
         return Err(format!("seeded ledger has {count} entries, wanted {n}"));
     }
