@@ -260,15 +260,50 @@ pub fn load_all(store: &Store, agent: &str) -> Result<Vec<Note>, String> {
     let dir = store.notes_dir(agent)?;
     let mut ids = Vec::new();
     collect(&dir, &dir, &mut ids)?;
-    let mut notes = Vec::new();
-    for (id, path) in ids {
-        let text = fsx::read_strict(&path)?;
-        notes.push(
-            Note::parse(&id, &text)
-                .map_err(|e| format!("corrupt note {} ({}): {e}", id, path.display()))?,
-        );
-    }
+    let mut notes = if ids.len() < 128 {
+        read_notes(&ids)?
+    } else {
+        read_notes_parallel(&ids)?
+    };
     notes.sort_by(|a, b| a.created.cmp(&b.created).then(a.id.cmp(&b.id)));
+    Ok(notes)
+}
+
+fn read_one(id: &str, path: &Path) -> Result<Note, String> {
+    let text = fsx::read_strict(path)?;
+    Note::parse(id, &text).map_err(|e| format!("corrupt note {id} ({}): {e}", path.display()))
+}
+
+fn read_notes(ids: &[(String, std::path::PathBuf)]) -> Result<Vec<Note>, String> {
+    let mut notes = Vec::with_capacity(ids.len());
+    for (id, path) in ids {
+        notes.push(read_one(id, path)?);
+    }
+    Ok(notes)
+}
+
+/// Read many small note files at once. The first error in directory order is
+/// the one returned, same as a single-threaded walk.
+fn read_notes_parallel(ids: &[(String, std::path::PathBuf)]) -> Result<Vec<Note>, String> {
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(2, 8);
+    let chunk = ids.len().div_ceil(workers).max(1);
+    let mut slots: Vec<Option<Result<Note, String>>> = (0..ids.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        for (chunk_ids, chunk_slots) in ids.chunks(chunk).zip(slots.chunks_mut(chunk)) {
+            scope.spawn(move || {
+                for ((id, path), slot) in chunk_ids.iter().zip(chunk_slots.iter_mut()) {
+                    *slot = Some(read_one(id, path));
+                }
+            });
+        }
+    });
+    let mut notes = Vec::with_capacity(ids.len());
+    for slot in slots {
+        notes.push(slot.ok_or_else(|| "internal error: a note was not read".to_string())??);
+    }
     Ok(notes)
 }
 

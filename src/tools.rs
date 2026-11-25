@@ -456,8 +456,7 @@ fn spend(a: &Args) -> Result<Value, String> {
         cost_micro_usd: c.unwrap_or(0),
         note: a.str("note").map(String::from),
     };
-    ledger::append(&store, &entry)?;
-    let all = ledger::read(&store, &agent)?;
+    let all = ledger::append(&store, &entry)?;
     let mine: Vec<Entry> = all.iter().filter(|e| e.task == task).cloned().collect();
     Ok(Value::obj(vec![
         ("recorded", Value::Bool(true)),

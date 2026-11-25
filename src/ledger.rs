@@ -119,20 +119,26 @@ impl Entry {
 }
 
 /// Append one entry as a single `write` of a whole line.
-pub fn append(store: &Store, entry: &Entry) -> Result<(), String> {
+///
+/// The returned entries are the file as it was read before the append, plus
+/// this entry. Callers that need the new totals use that instead of reading
+/// the file again.
+pub fn append(store: &Store, entry: &Entry) -> Result<Vec<Entry>, String> {
     let path = store.ledger_path(&entry.agent)?;
     if let Some(dir) = path.parent() {
         fsx::make_private_dir(dir)?;
     }
     // Refuse to extend a ledger that is already damaged.
-    read(store, &entry.agent)?;
+    let mut entries = read(store, &entry.agent)?;
     let mut line = entry.to_line();
     line.push('\n');
     let mut f = fsx::open_append_private(&path)?;
     f.write_all(line.as_bytes())
         .map_err(|e| format!("cannot append to {}: {e}", path.display()))?;
     f.sync_all()
-        .map_err(|e| format!("cannot sync {}: {e}", path.display()))
+        .map_err(|e| format!("cannot sync {}: {e}", path.display()))?;
+    entries.push(entry.clone());
+    Ok(entries)
 }
 
 pub fn read(store: &Store, agent: &str) -> Result<Vec<Entry>, String> {
