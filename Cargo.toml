@@ -3,7 +3,7 @@
 # sent to crates.io.
 [package]
 name = "libellus"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.83"
 license = "MIT"

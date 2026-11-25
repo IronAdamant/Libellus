@@ -1,8 +1,30 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 1.0.0 (unreleased)
 
-The scaffold.
+The first complete surface. Not tagged and not published.
+
+- `libellus_get` reads one note, including its body. Missing, corrupt, a
+  symlink, or another agent's file is an error.
+- `libellus_resolve` sets a note to `resolved` and appends a one-line outcome.
+  A second resolve is an error. `created` is kept. The file is replaced whole.
+- `libellus_ledger` returns totals for one agent or every agent, with optional
+  task and step filters and breakdowns. A damaged ledger is still an error and
+  is not repaired.
+- `libellus_promote` writes a Relatum note (create-only) and records its id.
+  An open question is refused. A missing `.swarmnotes/` is an error and is
+  not created. A second promote does not write another file.
+- `LIBELLUS_TOOLS` and `LIBELLUS_DISABLE` replace the AGENTS.md `agent-tools`
+  line when set. `core` cannot be disabled. A typo falls back to the core
+  tools and says why.
+- `LIBELLUS_AGENT` fills a required `--agent` when the flag is omitted. The
+  ledger does not use it.
+- `libellus hook` prints a snippet that runs `libellus brief` at session start
+  and after compaction, for a generic host, Claude Code, or Cursor.
+
+## 0.1.0
+
+The scaffold. Not tagged.
 
 - Strict, bounded JSON parser: nesting capped at 64, duplicate keys, control
   characters and lone surrogates rejected.
