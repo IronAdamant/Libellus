@@ -4,7 +4,6 @@ use common::*;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::process::Command;
-use std::time::{Duration, Instant, SystemTime};
 // The fifo brief and the file-size rollback use mkfifo and ulimit. Windows
 // has neither. The same write path runs on Windows; those two checks do not.
 #[cfg(unix)]
@@ -569,7 +568,7 @@ fn a_long_ledger_line_and_a_fifo_do_not_blank_the_brief() {
             let _ = tx.send(cli(&dir2, &["brief", "--agent", "main"]));
         });
         let out = rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(std::time::Duration::from_secs(5))
             .expect("brief hung on a fifo ledger");
         let text = String::from_utf8(out.stdout).unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
@@ -577,73 +576,6 @@ fn a_long_ledger_line_and_a_fifo_do_not_blank_the_brief() {
         assert!(text.contains("must survive"), "{text}");
         assert!(text.contains("not a regular file"), "{text}");
     }
-}
-
-#[test]
-fn a_bare_lock_and_a_dead_temp_are_recovered() {
-    let dir = project("s4-lock");
-    init(&dir);
-    must(
-        &dir,
-        &[
-            "note",
-            "--agent",
-            "main",
-            "--kind",
-            "question",
-            "--id",
-            "q1",
-            "--summary",
-            "Locked?",
-        ],
-    );
-    let lock = dir.join(".libellus/agents/main/notes/.q1.md.lock");
-    fs::write(&lock, b"").unwrap();
-    OpenOptions::new()
-        .write(true)
-        .open(&lock)
-        .unwrap()
-        .set_modified(SystemTime::now() - Duration::from_secs(5))
-        .unwrap();
-    let started = Instant::now();
-    must(
-        &dir,
-        &[
-            "resolve",
-            "--agent",
-            "main",
-            "--id",
-            "q1",
-            "--outcome",
-            "Cleared.",
-        ],
-    );
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "bare lock blocked for {:?}",
-        started.elapsed()
-    );
-
-    let dead = dir.join(".libellus/agents/main/.ledger.jsonl.tmp-999999-1");
-    fs::write(&dead, b"leftover").unwrap();
-    OpenOptions::new()
-        .write(true)
-        .open(&dead)
-        .unwrap()
-        .set_modified(SystemTime::now() - Duration::from_secs(120))
-        .unwrap();
-    let live = dir.join(format!(
-        ".libellus/agents/main/.ledger.jsonl.tmp-{}-1",
-        std::process::id()
-    ));
-    fs::write(&live, b"in progress").unwrap();
-    let held = dir.join(".libellus/agents/main/notes/.q1.md.lock");
-    fs::write(&held, b"held\n").unwrap();
-    let body = must(&dir, &["check"]);
-    assert!(!dead.exists(), "{body}");
-    assert!(live.exists(), "{body}");
-    assert!(held.exists(), "a fresh non-pid lock must stay: {body}");
-    assert!(body.contains("999999"), "{body}");
 }
 
 #[cfg(unix)]

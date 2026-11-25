@@ -239,7 +239,7 @@ project.
 | `libellus_resolve` | core | Mark a note resolved with a one-line outcome, or up to 50 (`items`). `supersede` marks it replaced. |
 | `libellus_ls` | core | List your notes. Page with `before_id`: pass back `next_before_id`. |
 | `libellus_brief` | core | The compaction brief, with your open board tasks. Still returns the notes if the ledger or board cannot be read. |
-| `libellus_doctor` | core | Diagnose the setup and read every note, ledger and board file for damage; each failing check says how to fix it. `fix` clears locks and temp files left by a writer that is gone. |
+| `libellus_doctor` | core | Diagnose the setup and read every note, ledger and board file for damage; each failing check says how to fix it. `fix` clears old temp files and 1.3 lock files. |
 | `libellus_promote` | core | Copy a note into Relatum and record its Relatum id. |
 | `libellus_spend` | ledger | Record tokens and cost for a step. Refuses once the ledger would pass 32 MiB. |
 | `libellus_ledger` | ledger | Totals, by task, by step, or across every agent. `archive: true` (with `agent`) moves that ledger into `archive/` and starts a fresh one. |
@@ -277,10 +277,10 @@ first") and assign its board tasks to that name. A sub-agent whose prompt
 names an agent uses that name, even when the hook gave it another.
 
 `libellus doctor` checks the setup (store, environment variables, write
-access, damaged files, stale locks, the AGENTS.md groups line, `libellus-mcp`
-beside the binary, Relatum) and exits 1 with a fix for each failing check.
-`libellus doctor --fix` only clears locks and temp files left by a process
-that is gone.
+access, damaged files, leftover files, a network file system, the AGENTS.md
+groups line, `libellus-mcp` beside the binary, Relatum) and exits 1 with a
+fix for each failing check. `libellus doctor --fix` only clears temp files
+over an hour old and lock files left by 1.3.
 
 ### Tool groups
 
@@ -321,11 +321,14 @@ is covered by tests in `tests/`:
   never overwrites another, and resolve and promote replace only that note's
   own file.
 - **Safe with several writers.** Resolve, promote, spend, archive and the note
-  counter each take a lock, and every board change takes the one board lock
+  counter each take an operating-system file lock (`flock` on Unix,
+  `LockFileEx` on Windows), and every board change takes the one board lock
   from reading to writing, so two agents ticking the last two children at
-  once close the parent exactly once. If a writer is killed, exactly one
-  later writer takes over its lock, so two notes never share a number and a
-  resolve is never lost.
+  once close the parent exactly once. If a writer is killed, the kernel
+  releases its lock at once: there is no stale lock to wait out or clear,
+  two notes never share a number and a resolve is never lost. Locks on a
+  network file system (NFS, SMB) may not be shared between machines;
+  `doctor` warns when the store is on one.
 - **All or nothing.** A batch of notes, resolves or board ops is checked
   whole first; one bad item writes nothing.
 - **The page cannot be abused.** Every title, outcome and summary on the
@@ -367,6 +370,17 @@ notes ([docs/perf/1.3.0.md](docs/perf/1.3.0.md)):
 Most of a tick is rewriting the page, which reads every agent's notes for
 the open questions. An outline pays one synced file write per task, which is
 slow on macOS; it is still one call instead of 200.
+
+## Upgrading
+
+Stores from 1.0.0 to 1.3.1 are read unchanged. 1.4.0 replaces the lock
+files: locks now live in `.libellus/locks/` and are operating-system locks
+that the kernel releases when a writer exits or is killed (SPEC section
+1.1). A `.<name>.lock` or `.<name>.lock.break` file left by 1.3 blocks
+nothing; `libellus check`, `libellus doctor --fix` and the session brief
+delete them. Stop every 1.3 writer (CLI, MCP server and hooks) before the
+first 1.4 write: 1.3 and 1.4 take different locks, so running both on one
+store at once is not supported.
 
 ## Build and test
 

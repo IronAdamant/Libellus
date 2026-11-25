@@ -107,7 +107,7 @@ pub fn run(a: &Args) -> Result<Value, String> {
             pass(
                 "stray_files",
                 if removed.is_empty() {
-                    "no abandoned locks or temp files".into()
+                    "no abandoned temp files or 1.3 lock files".into()
                 } else {
                     format!("removed {}", removed.join(", "))
                 },
@@ -115,17 +115,17 @@ pub fn run(a: &Args) -> Result<Value, String> {
         } else {
             fail(
                 "stray_files",
-                format!("left by a process that is gone: {}", clip_list(&leftovers)),
-                "run libellus doctor --fix (or libellus check), which removes only files whose writer is gone".into(),
+                format!(
+                    "temp files over an hour old or lock files from Libellus 1.3: {}",
+                    clip_list(&leftovers)
+                ),
+                "run libellus doctor --fix (or libellus check), which removes only those files; the lock files in locks/ stay".into(),
             )
         });
+        checks.push(file_system(store));
         checks.push(match crate::check::scan(store) {
             Ok(scan) => {
-                let problems: Vec<String> = scan
-                    .problems
-                    .into_iter()
-                    .filter(|p| !p.starts_with("stale lock"))
-                    .collect();
+                let problems = scan.problems;
                 if problems.is_empty() {
                     pass(
                         "store_files",
@@ -226,6 +226,25 @@ fn writable(store: &Store) -> Check {
                 "give this user write access to {} (or point LIBELLUS_DIR at a writable store)",
                 store.dir.display()
             ),
+        ),
+    }
+}
+
+/// A store on a network file system: OS file locks there may be emulated,
+/// local to one machine, or ignored. A warning, not a failure.
+fn file_system(store: &Store) -> Check {
+    match crate::oslock::network_fs(&store.dir) {
+        Some(kind) => Check {
+            name: "file_system",
+            ok: true,
+            detail: format!(
+                "the store is on a network file system ({kind}); file locks there may be emulated or not shared between machines, so two writers could both get a lock"
+            ),
+            fix: Some("keep the store on a local disk, or let only one machine write to it".into()),
+        },
+        None => pass(
+            "file_system",
+            "local, or not detectable on this platform: file locks are reliable".into(),
         ),
     }
 }

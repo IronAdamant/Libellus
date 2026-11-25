@@ -2,8 +2,8 @@
 
 Libellus is a private notepad and number ledger per agent. The files are the
 product. The CLI and the MCP server are conveniences over them, and any agent
-that can read and write files can use the store without either. Libellus 1.3.1
-reads notes and ledgers written by 1.0.0 to 1.3.0 (1.3.0 added the board,
+that can read and write files can use the store without either. Libellus 1.4.0
+reads notes and ledgers written by 1.0.0 to 1.3.1 (1.3.0 added the board,
 section 5). Notes written since 1.2.0 have `seq`; a 1.1.2 binary rejects that
 key. An older binary ignores `board/` and `board.html`.
 
@@ -18,6 +18,10 @@ key. An older binary ignores `board/` and `board.html`.
   board/seq                          the board counter
   board/archive/<project>/<id>.md    closed projects
   board.html                         the read-only page for people
+  locks/<agent>.notes.lock           lock files (section 1.1), never deleted
+  locks/<agent>.ledger.lock
+  locks/<agent>.seq.lock
+  locks/board.lock
 ```
 
 - The store is the nearest `.libellus/` walking up from the working directory,
@@ -39,6 +43,56 @@ key. An older binary ignores `board/` and `board.html`.
   A regular file that is not a note in the notes folder is an error. A fifo
   or other non-regular file is not opened: `ls` and `brief` skip it and warn,
   and `check` reports it.
+
+### 1.1 Locking
+
+Writers that read, check and then write hold an operating-system lock on
+one file under `locks/`:
+
+| Lock | Held by |
+| --- | --- |
+| `<agent>.notes.lock` | resolve (each item of a batch) and promote, from reading the note to rewriting it |
+| `<agent>.ledger.lock` | spend, archive, and the locked ledger read of `libellus_ledger` and the brief |
+| `<agent>.seq.lock` | taking note numbers for a note or a batch |
+| `board.lock` | every board write, from the read to the last write and the page |
+
+The lock is `flock(fd, LOCK_EX | LOCK_NB)` on Unix and `LockFileEx` with
+`LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY` on the whole file on
+Windows, on the lock file opened read-write (created when missing, 0600)
+and kept open while held. A busy lock is retried with a sleep of 1 to 10 ms
+for up to 8 seconds, then the call fails with `<path> is locked by another
+libellus process. Retry shortly.` Any other error names the path. The
+kernel releases the lock when the holder closes the file, exits or is
+killed, so there is no stale lock, no pid or age in the file, and nothing to
+clear by hand. Lock files are empty and are never deleted: removing a locked
+file lets one writer lock the old file while another locks a new one. A
+symlink or non-regular file at a lock path is refused. `check`, `doctor` and
+the reaper treat `locks/` as part of the store and leave it alone.
+
+Locks are advisory: an agent that edits the files by hand takes none.
+
+Files from 1.3: 1.3 locked with a file `.<name>.lock` beside what it
+guarded (with a `.<name>.lock.break` guard), created exclusive and deleted
+on release. 1.4 never uses those names, so one left in a store blocks
+nothing. `doctor` lists them under `stray_files`, and `check` (or `doctor
+--fix`, or the brief's own clean-up) deletes them. Running 1.3 and 1.4
+writers on one store at the same time is not supported: they take
+different locks.
+
+Network file systems: `flock` on NFS is emulated with byte-range locks or
+local to one client on some setups, and SMB clients differ in how they map
+it. Two writers on different machines may then both get a lock. `doctor`
+has a `file_system` check that warns (and still passes) when the store is on
+a network file system: on macOS a mount without `MNT_LOCAL` (autofs trigger
+points aside), on Linux x86_64 and aarch64 an `f_type` of NFS, SMB, CIFS,
+SMB2, 9P, AFS, Coda or Ceph, on Windows a UNC path or a drive that
+`GetDriveTypeW` calls remote. Other platforms are not checked.
+
+Temp files (`.<name>.tmp-<pid>-<n>`) are judged by age only: one older than
+an hour is abandoned and `check` removes it. A write holds its temp for
+milliseconds. A writer paused for longer (a laptop asleep mid-write) only
+loses that write: its rename or link fails with an error and nothing else
+changes, since temp names are never reused.
 
 ## 2. Notes
 
@@ -216,8 +270,9 @@ the last segment gains a suffix `-2`, `-3`, and so on. Relatum reads a value
 shaped `[...]` as a list, so a summary that starts with `[` and ends with `]`
 is written with a trailing `.` to stay a string.
 
-Promote holds the same note lock as resolve, from reading the note to
-rewriting it, so a concurrent resolve or second promote is never lost.
+Promote holds the agent's notes lock (section 1.1), as resolve does, from
+reading the note to rewriting it, so a concurrent resolve or second promote
+is never lost.
 
 Then `promoted` on the Libellus note is set to that Relatum id, atomically.
 If the Relatum write succeeded and this update fails, the error names both
@@ -349,8 +404,9 @@ ids are known), `updated`, `removed`, `closed_by_children`, `reopened`,
 page path) or `html_error`. A failed page write does not undo the board
 write.
 
-Locking: one board lock, `board/.board.lock`, the same create-exclusive
-`fsx::Lock` as notes, held from the read to the last write and the page. Not
+Locking: one board lock, `locks/board.lock`, the same operating-system
+lock as notes (section 1.1), held from the read to the last write and the
+page. Not
 a lock per task: an op reaches ancestors (closing and reopening), descendants
 (dropping) and whole projects (archive), and which tasks those are is only
 known after the read. One lock makes read, check and write one step, so two
@@ -425,7 +481,7 @@ types, missing required arguments and values outside an `enum` are errors with
 - `libellus_resolve` `{agent, id, outcome, supersede?}` returns the updated note.
   Or `{agent, items}`: up to 50 `{id, outcome, supersede?}`, checked whole
   first (a missing note, an already resolved note without supersede, an id
-  twice), then resolved in order, each under its own lock. The reply is
+  twice), then resolved in order, each under the agent's notes lock. The reply is
   `{resolved, notes: [{id, status, superseded?}]}`.
   `supersede`, or an outcome that starts with `SUPERSEDED:` or `REVERSED:`,
   sets `superseded` and is allowed when the note is already resolved.
@@ -467,30 +523,24 @@ types, missing required arguments and values outside an `enum` are errors with
   `libellus_doctor`'s `store_files` check) reads every note and ledger. It fails when a file is
   damaged, a note is over 1 MiB, a ledger total overflows, a note's `agent`
   field does not match its folder, a note id cannot be opened, a ledger line
-  was left out of the totals, a ledger ends in a partial line, or a stale
-  lock could not be removed. `check` first deletes stale locks and temp files
-  whose writer is gone. A lock with no finished pid line is stale after one
-  second. A finished line that names a dead process is stale at once. A fresh
-  lock that is not a pid line is left in place. Only the holder of the
-  `.<name>.lock.break` guard removes a stale lock, and it judges the lock
-  again while holding the guard, so a lock taken a moment later is never
-  removed. A holder deletes its lock only while the file still holds the line
-  it wrote. On Unix a pid is checked with `kill(pid, 0)`: EPERM is alive,
-  ESRCH is dead. `ps` is not run. On Windows a pid cannot be checked and a
-  lock is judged by its age. The success JSON lists
-  `removed`.
+  was left out of the totals, or a ledger ends in a partial line. `check`
+  first deletes temp files over an hour old and lock files left by 1.3
+  (section 1.1); the lock files in `locks/` are never touched. The success
+  JSON lists `removed`.
   `check` also reads the board and its archive (section 5).
 - `libellus_doctor` `{fix?}` returns `{ok, checks: [{name, ok, detail,
   fix}]}`: `version` (and platform), `agent` (`LIBELLUS_AGENT`), `store`
   (where, and whether `LIBELLUS_DIR` chose it), `writable` (a probe file
-  made and removed with `write_atomic`), `stray_files` (stale locks and temp
-  files from a dead process), `store_files` (the `check` scan, read-only),
+  made and removed with `write_atomic`), `stray_files` (temp files over an
+  hour old and 1.3 lock files), `file_system` (warns, and passes, when the
+  store is on a network file system, section 1.1), `store_files` (the
+  `check` scan, read-only),
   `tool_groups` (the AGENTS.md line or the environment variables),
   `mcp_binary` (`libellus-mcp` next to the binary), `relatum` (the promote
   store; none found is ok and says so) and, on Windows, `path_length` (the
   store path plus about 100 characters, against the 260 limit). Each
-  failing check has a `fix`. `fix: true` removes only stale locks and
-  abandoned temp files, as `check` does. The CLI exits 1 when `ok` is false.
+  failing check has a `fix`. `fix: true` removes only those temp files and
+  1.3 lock files, as `check` does. The CLI exits 1 when `ok` is false.
 - `libellus_promote` `{agent, id, scope}` returns `{id, promoted, relatum_kind, path}`.
 - `libellus_spend` `{agent, task, step?, model?, tokens_in?, tokens_out?,
   cost_micro_usd?, note?}` (at least one number) returns the task and agent

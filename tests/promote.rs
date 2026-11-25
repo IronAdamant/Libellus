@@ -332,14 +332,15 @@ fn a_symlink_scope_is_refused_and_a_failed_update_leaves_one_relatum_file() {
     drop(guard);
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1));
-    // Promote takes the note lock first, so a read-only notes folder fails at
-    // once, before any Relatum file is written.
+    // The note lock lives in .libellus/locks/, so the read-only notes folder
+    // is met at the rewrite: the error names both files, and exactly one
+    // Relatum file was written.
     assert!(
-        err.contains("cannot lock") && err.contains("pick.md"),
+        err.contains("Relatum note written") && err.contains("pick.md"),
         "{err}"
     );
     let files = markdowns(&dir.join(".swarmnotes"));
-    assert!(files.is_empty(), "{files:?}");
+    assert_eq!(files.len(), 1, "{files:?}");
     assert!(!private_has_promoted(&dir));
     assert!(strays(&dir).is_empty(), "{:?}", strays(&dir));
 }

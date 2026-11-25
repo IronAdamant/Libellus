@@ -99,8 +99,6 @@ pub fn scan(store: &Store) -> Result<Scan, String> {
     if let Ok(dir) = crate::board::board_dir(store) {
         find_temps(&dir, &mut strays);
     }
-    // A lock that reap could not delete is still a problem.
-    problems.extend(fsx::stale_lock_notes(&store.dir));
     Ok(Scan {
         agents,
         problems,

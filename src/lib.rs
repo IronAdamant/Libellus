@@ -18,6 +18,7 @@ pub mod ledger_meta;
 pub mod mcp;
 pub mod note;
 pub mod note_cmd;
+pub mod oslock;
 pub mod plan;
 pub mod promote;
 pub mod reap;

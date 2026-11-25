@@ -10,7 +10,7 @@
 use crate::fsx;
 use crate::json::{self, Value};
 use crate::ledger_meta;
-use crate::store::Store;
+use crate::store::{Locked, Store};
 use std::collections::HashMap;
 use std::io::Write;
 
@@ -215,7 +215,7 @@ pub fn append(store: &Store, entry: &Entry) -> Result<Recorded, String> {
     if let Some(dir) = path.parent() {
         fsx::make_private_dir(dir)?;
     }
-    let _lock = fsx::Lock::acquire(&path)?;
+    let _lock = store.lock(Locked::Ledger(&entry.agent))?;
     fsx::refuse_special(&path)?;
     let mut line = entry.to_line();
     line.push('\n');
@@ -479,7 +479,7 @@ pub fn load_report(store: &Store, agent: &str) -> Result<Summed, String> {
     if matches!(fsx::file_kind(&path)?, fsx::FileKind::Missing) {
         return Ok(Summed::empty());
     }
-    let _lock = fsx::Lock::acquire(&path)?;
+    let _lock = store.lock(Locked::Ledger(agent))?;
     let summed = read_summed(store, agent)?;
     if summed.overflow_line.is_none() && !summed.torn {
         let _ = ledger_meta::store_entries(&path, &summed.entries);

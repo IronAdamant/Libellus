@@ -5,7 +5,6 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::process::Command;
 use std::thread;
-use std::time::{Duration, SystemTime};
 
 fn cli(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     Command::new(CLI)
@@ -46,7 +45,7 @@ fn a_fifo_is_not_opened_and_a_symlink_ledger_is_refused() {
     let started = std::time::Instant::now();
     let listed = cli(&dir, &["ls", "--agent", "main"]);
     assert!(
-        started.elapsed() < Duration::from_secs(3),
+        started.elapsed() < std::time::Duration::from_secs(3),
         "ls hung on a fifo"
     );
     let body = String::from_utf8_lossy(&listed.stdout);
@@ -83,7 +82,7 @@ fn a_fifo_is_not_opened_and_a_symlink_ledger_is_refused() {
         ],
     );
     assert!(
-        started.elapsed() < Duration::from_secs(3),
+        started.elapsed() < std::time::Duration::from_secs(3),
         "spend hung on a fifo"
     );
     let spend_err = String::from_utf8_lossy(&spent.stderr);
@@ -417,16 +416,12 @@ fn a_bare_libellus_dir_needs_init_and_dirs_are_private() {
 }
 
 #[test]
-fn check_reports_a_stale_lock_and_how_to_clear_it() {
+fn check_removes_a_lock_file_left_by_1_3() {
     let dir = project("v3-lock");
     init(&dir);
     fs::create_dir_all(dir.join(".libellus/agents/main")).unwrap();
     let lock = dir.join(".libellus/agents/main/.ledger.jsonl.lock");
     fs::write(&lock, "pid 999999\n").unwrap();
-    let file = File::options().write(true).open(&lock).unwrap();
-    file.set_modified(SystemTime::now() - Duration::from_secs(120))
-        .unwrap();
-    drop(file);
     let checked = cli(&dir, &["check"]);
     let err = String::from_utf8_lossy(&checked.stderr);
     let body = String::from_utf8(checked.stdout).unwrap();
@@ -435,5 +430,5 @@ fn check_reports_a_stale_lock_and_how_to_clear_it() {
         body.contains("removed") && body.contains(".ledger.jsonl.lock"),
         "{body}"
     );
-    assert!(!lock.exists(), "stale lock should have been removed");
+    assert!(!lock.exists(), "the 1.3 lock file should have been removed");
 }

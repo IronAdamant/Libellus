@@ -4,7 +4,6 @@ use common::*;
 use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime};
 
 fn cli(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     Command::new(CLI)
@@ -148,93 +147,6 @@ fn one_resolve_wins_when_many_run_together() {
     assert_eq!(wins, 1);
     let text = fs::read_to_string(dir.join(".libellus/agents/main/notes/q1.md")).unwrap();
     assert_eq!(text.matches("Outcome:").count(), 1, "{text}");
-}
-
-#[test]
-fn a_stale_resolve_lock_is_replaced_and_a_fresh_one_is_reported() {
-    let dir = project("reg-lock");
-    init(&dir);
-    let made = cli(
-        &dir,
-        &[
-            "note",
-            "--agent",
-            "main",
-            "--kind",
-            "question",
-            "--id",
-            "q1",
-            "--summary",
-            "Lock?",
-        ],
-    );
-    assert!(
-        made.status.success(),
-        "{}",
-        String::from_utf8_lossy(&made.stderr)
-    );
-    let lock = dir.join(".libellus/agents/main/notes/.q1.md.lock");
-    let file = fs::File::create(&lock).unwrap();
-    file.set_modified(SystemTime::now() - Duration::from_secs(120))
-        .unwrap();
-    drop(file);
-    let out = cli(
-        &dir,
-        &[
-            "resolve",
-            "--agent",
-            "main",
-            "--id",
-            "q1",
-            "--outcome",
-            "Took the stale lock.",
-        ],
-    );
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(!lock.exists());
-
-    let made = cli(
-        &dir,
-        &[
-            "note",
-            "--agent",
-            "main",
-            "--kind",
-            "question",
-            "--id",
-            "q2",
-            "--summary",
-            "Busy?",
-        ],
-    );
-    assert!(
-        made.status.success(),
-        "{}",
-        String::from_utf8_lossy(&made.stderr)
-    );
-    fs::write(
-        dir.join(".libellus/agents/main/notes/.q2.md.lock"),
-        "held\n",
-    )
-    .unwrap();
-    let out = cli(
-        &dir,
-        &[
-            "resolve",
-            "--agent",
-            "main",
-            "--id",
-            "q2",
-            "--outcome",
-            "Should wait.",
-        ],
-    );
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("locked"));
 }
 
 fn agent_entries(body: &str) -> u64 {

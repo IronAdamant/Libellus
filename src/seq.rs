@@ -5,7 +5,7 @@
 
 use crate::fsx;
 use crate::note;
-use crate::store::Store;
+use crate::store::{Locked, Store};
 use std::path::Path;
 
 /// Take `n` note numbers for `agent` and return the first. The numbers are
@@ -14,7 +14,7 @@ pub fn alloc_seqs(store: &Store, agent: &str, n: u64) -> Result<u64, String> {
     let dir = store.agent_dir(agent)?;
     fsx::make_private_dir(&dir)?;
     let path = dir.join("seq");
-    let _lock = fsx::Lock::acquire(&path)?;
+    let _lock = store.lock(Locked::Seq(agent))?;
     let current = match read_counter(&path)? {
         Some(v) => v,
         None => max_seq(store, agent)?,

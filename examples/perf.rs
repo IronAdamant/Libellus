@@ -13,7 +13,7 @@
 use libellus::fsx;
 use libellus::json::Value;
 use libellus::ledger::{self, Entry};
-use libellus::store::Store;
+use libellus::store::{Locked, Store};
 use libellus::tool::Tool;
 use libellus::tools::TOOLS;
 use std::fs::{self, File};
@@ -50,7 +50,7 @@ fn run() -> Result<(), String> {
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let store = root.join(".libellus");
     std::env::set_var("LIBELLUS_DIR", &store);
-    Store::init()?;
+    let opened = Store::init()?;
 
     let mut md = String::new();
     md.push_str(&format!("# Libellus performance {title}\n\n"));
@@ -69,6 +69,10 @@ fn run() -> Result<(), String> {
     let ledger = tool("libellus_ledger")?;
 
     let mut rows: Vec<Row> = Vec::new();
+    rows.push(Row::from_us(
+        "lock acquire and release, uncontended",
+        time_lock(&opened, 2_000)?,
+    ));
     let mut sizes: Vec<String> = Vec::new();
     let scales = [10usize, 1_000, 10_000];
     let mut have = 0usize;
@@ -264,6 +268,16 @@ fn time_tool(tool: &Tool, args: &Value, n: usize) -> Result<Vec<u128>, String> {
     for _ in 0..n {
         let start = Instant::now();
         run_tool(tool, args)?;
+        out.push(start.elapsed().as_micros());
+    }
+    Ok(out)
+}
+
+fn time_lock(store: &Store, n: usize) -> Result<Vec<u128>, String> {
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let start = Instant::now();
+        drop(store.lock(Locked::Ledger("main"))?);
         out.push(start.elapsed().as_micros());
     }
     Ok(out)

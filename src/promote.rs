@@ -9,7 +9,7 @@
 use crate::fsx;
 use crate::json::Value;
 use crate::note::{self, Note};
-use crate::store::Store;
+use crate::store::{Locked, Store};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -19,7 +19,7 @@ pub fn promote(agent: &str, id: &str, scope: &str) -> Result<Value, String> {
     // The same lock as resolve, held across the read, the Relatum write and
     // the rewrite, so a concurrent resolve or second promote cannot be lost.
     let _lock = if note_path.parent().is_some_and(|parent| parent.is_dir()) {
-        Some(fsx::Lock::acquire(&note_path)?)
+        Some(store.lock(Locked::Notes(agent))?)
     } else {
         None
     };

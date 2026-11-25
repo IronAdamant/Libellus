@@ -8,7 +8,7 @@
 use crate::fsx;
 use crate::json::Value;
 use crate::note::{self, Note};
-use crate::store::Store;
+use crate::store::{Locked, Store};
 use crate::tool::{field, field_list, field_str, Args};
 
 /// Most notes or resolves in one call.
@@ -345,7 +345,7 @@ fn resolve_one(
 ) -> Result<Note, String> {
     let path = note::note_path(store, agent, id)?;
     let _lock = if path.parent().is_some_and(|parent| parent.is_dir()) {
-        Some(fsx::Lock::acquire(&path)?)
+        Some(store.lock(Locked::Notes(agent))?)
     } else {
         None
     };

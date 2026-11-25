@@ -4,7 +4,7 @@ use crate::fsx;
 use crate::json::Value;
 use crate::ledger::{self, Entry};
 use crate::note;
-use crate::store::Store;
+use crate::store::{Locked, Store};
 use crate::tool::Args;
 
 pub fn spend(a: &Args) -> Result<Value, String> {
@@ -61,7 +61,7 @@ pub fn archive(agent: &str) -> Result<Value, String> {
     if let Some(dir) = path.parent() {
         fsx::make_private_dir(dir)?;
     }
-    let _lock = fsx::Lock::acquire(&path)?;
+    let _lock = store.lock(Locked::Ledger(agent))?;
     fsx::refuse_special(&path)?;
     let len = match fsx::file_kind(&path)? {
         fsx::FileKind::Missing => {

@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.4.0
+
+Operating-system file locks. A lock was a file made with `create_new` that
+held a pid, a time and a token, so a writer that crashed left it behind and
+Libellus had to guess when it was stale: a dead pid (which pid reuse and
+separate pid namespaces get wrong), an age over 30 seconds (which a laptop
+asleep for longer, or clock skew on a network drive, gets wrong), a bare
+file after one second, and a `.break` guard. Now every lock is `flock` on
+Unix and `LockFileEx` on Windows, on a lock file kept open while held. The
+kernel releases it when the holder exits or is killed, so a crashed writer
+blocks nobody and there is nothing to guess. Taking and releasing a lock went
+from about 5 ms (a synced file create and delete) to about 40 us.
+
+Breaking changes (there are no users yet):
+
+- Lock files live in `.libellus/locks/` (`<agent>.notes.lock`,
+  `<agent>.ledger.lock`, `<agent>.seq.lock`, `board.lock`) and are never
+  deleted. Resolve and promote take one lock per agent instead of one per
+  note.
+- Running 1.3 and 1.4 writers on one store at the same time is not
+  supported: they take different locks. Stop every 1.3 CLI, MCP server and
+  hook before the first 1.4 write. A `.<name>.lock` or `.<name>.lock.break`
+  file left by 1.3 blocks nothing; `check`, `doctor --fix` and the brief
+  delete it, and `doctor` lists it under `stray_files` until then.
+- There are no stale locks, so `check` no longer reports one and `doctor
+  --fix` no longer removes one. The busy error is `<path> is locked by
+  another libellus process. Retry shortly.`
+- Temp files are reaped by age only: one over an hour old is removed. The pid
+  in a temp name is no longer checked, so no pid is ever checked.
+- Promote with a read-only notes folder now fails at the note rewrite (the
+  error names the Relatum file it wrote) instead of at the lock.
+
+Added:
+
+- `doctor` has a `file_system` check. It warns, and passes, when the store is
+  on a network file system, where `flock` may be emulated or not shared
+  between machines: macOS `statfs` without `MNT_LOCAL`, a Linux NFS, SMB,
+  CIFS, 9P, AFS, Coda or Ceph `f_type` (x86_64 and aarch64), a Windows UNC
+  path or remote drive.
+- `src/oslock.rs`, std only, written to be copied into another crate.
+- `examples/perf.rs` times a lock acquire and release.
+
+Removed: `fsx::Lock`, `fsx::break_stale_lock`, `fsx::lock_is_stale`,
+`fsx::stale_lock_notes`, `fsx::pid_alive` (and its `kill(pid, 0)` call), the
+lock token, `LOCK_STALE`, `LOCK_BARE` and the `.break` guard.
+
 ## 1.3.1
 
 Smaller tool definitions. A host sends `tools/list` to the model on every

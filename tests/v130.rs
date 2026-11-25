@@ -961,9 +961,8 @@ fn doctor_is_healthy_then_names_a_planted_problem() {
     );
     fs::remove_file(dir.join("AGENTS.md")).unwrap();
 
-    // A lock left by a process that is gone: doctor reports it and leaves
-    // it; --fix removes it.
-    #[cfg(unix)]
+    // A lock file left by 1.3: doctor reports it and leaves it; --fix
+    // removes it.
     {
         let lock = dir.join(".libellus/board/.board.lock");
         fs::write(&lock, "pid 999999 x\n").unwrap();

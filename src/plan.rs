@@ -1,6 +1,6 @@
 //! `libellus_plan`: change the board in one batch.
 //!
-//! The whole call runs under one board lock (`board/.board.lock`): read
+//! The whole call runs under one board lock (`locks/board.lock`): read
 //! every task, apply every op to a copy in memory, settle the cascades,
 //! check the result, and only then write. A bad op means no file changes.
 //!
@@ -20,7 +20,7 @@ use crate::board::{self, is_open, Board, Task, BY_CHILDREN, MAX_DEPTH};
 use crate::fsx;
 use crate::json::Value;
 use crate::note;
-use crate::store::Store;
+use crate::store::{Locked, Store};
 use crate::tool::{field, field_list, field_str, Args};
 use std::collections::BTreeSet;
 
@@ -660,7 +660,7 @@ pub fn run(a: &Args) -> Result<Value, String> {
     };
     let dir = board::board_dir(&store)?;
     fsx::make_private_dir(&dir)?;
-    let _lock = fsx::Lock::acquire(&dir.join("board"))?;
+    let _lock = store.lock(Locked::Board)?;
     let current = board::load(&store)?;
     let counter = dir.join("seq");
     let last_seq = match crate::seq::read_counter(&counter)? {

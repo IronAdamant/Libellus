@@ -344,39 +344,6 @@ fn b9_a_crlf_note_is_read() {
     );
 }
 
-#[cfg(unix)]
-#[test]
-fn b10_a_live_lock_holder_is_not_judged_by_ps() {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = project("r5-ps");
-    init(&dir);
-    note(&dir, "seed", "finding");
-    // A ps that fails for every call, like one without -p.
-    let bin = project("r5-ps-bin");
-    let fake = bin.join("ps");
-    fs::write(&fake, "#!/bin/sh\nexit 1\n").unwrap();
-    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let lock = dir.join(".libellus/agents/main/.seq.lock");
-    let line = format!("pid {} live-holder\n", std::process::id());
-    fs::write(&lock, &line).unwrap();
-    let out = cmd(&dir, &["check"]).env("PATH", &path).output().unwrap();
-    ok(&out);
-    assert_eq!(
-        fs::read_to_string(&lock).unwrap(),
-        line,
-        "a lock held by a live process was broken"
-    );
-    // A dead holder is still seen as dead.
-    fs::write(&lock, "pid 999999\n").unwrap();
-    ok(&cmd(&dir, &["check"]).env("PATH", &path).output().unwrap());
-    assert!(!lock.exists());
-}
-
 #[test]
 fn a_cache_without_tasks_complete_is_not_trusted_for_task_totals() {
     let dir = project("r5-meta");

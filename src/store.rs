@@ -5,11 +5,28 @@
 //! .libellus/
 //!   agents/<agent>/notes/<id>.md     one private note per file
 //!   agents/<agent>/ledger.jsonl      append-only number ledger
+//!   locks/<agent>.notes.lock         operating-system lock files, kept
 //! ```
 
 use crate::fsx;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// What a lock guards. Each is one file under `.libellus/locks/`.
+#[derive(Clone, Copy, Debug)]
+pub enum Locked<'a> {
+    /// Resolve and promote of this agent's notes.
+    Notes(&'a str),
+    /// This agent's ledger: spend, archive and the locked read.
+    Ledger(&'a str),
+    /// This agent's note counter.
+    Seq(&'a str),
+    /// Every board write, from the read to the last write.
+    Board,
+}
+
+/// How long a writer waits for a lock before it gives up.
+pub const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
 
 pub struct Store {
     /// The `.libellus` folder.
@@ -123,6 +140,34 @@ impl Store {
     /// `agents/<agent>/archive`, refused when it is a symlink.
     pub fn archive_dir(&self, agent: &str) -> Result<PathBuf, String> {
         fsx::join_child(&self.agent_dir(agent)?, &["archive"])
+    }
+
+    /// Take the operating-system lock for `what`, waiting up to `LOCK_WAIT`.
+    /// The kernel releases it when the holder exits or is killed, so there
+    /// is no stale lock to clear. Lock files are created on first use and
+    /// never deleted.
+    pub fn lock(&self, what: Locked) -> Result<crate::oslock::FileLock, String> {
+        let name = match what {
+            Locked::Notes(agent) => self.lock_name(agent, "notes")?,
+            Locked::Ledger(agent) => self.lock_name(agent, "ledger")?,
+            Locked::Seq(agent) => self.lock_name(agent, "seq")?,
+            Locked::Board => "board.lock".to_string(),
+        };
+        // Refuse a symlinked locks folder before creating anything in it.
+        let dir = fsx::join_child(&self.dir, &["locks"])?;
+        fsx::make_private_dir(&dir)?;
+        let path = fsx::join_child(&self.dir, &["locks", &name])?;
+        crate::oslock::FileLock::acquire(&path, LOCK_WAIT, "libellus")
+    }
+
+    /// `.libellus/locks/`, where every lock file lives.
+    pub fn locks_dir(&self) -> PathBuf {
+        self.dir.join("locks")
+    }
+
+    fn lock_name(&self, agent: &str, what: &str) -> Result<String, String> {
+        self.agent_dir(agent)?;
+        Ok(format!("{agent}.{what}.lock"))
     }
 
     pub fn ledger_path(&self, agent: &str) -> Result<PathBuf, String> {

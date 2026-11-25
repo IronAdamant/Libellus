@@ -184,7 +184,7 @@ pub static TOOLS: &[Tool] = &[
         params: &[opt(
             "fix",
             Kind::Bool,
-            "Remove locks and temp files whose writer is gone.",
+            "Remove old temp files and 1.3 lock files.",
         )],
         run: crate::doctor::run,
     },
