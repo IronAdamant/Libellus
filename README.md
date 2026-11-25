@@ -36,8 +36,12 @@ with a CLI and a stdio MCP server over the same files. No service, no account.
 
 ## Install
 
-Libellus is not published to crates.io. Build it from this repository (Rust
-1.83 or newer):
+Download a release archive for Linux x64, macOS x64, macOS arm64, or Windows
+x64 from the [GitHub releases](https://github.com/IronAdamant/Libellus/releases).
+Each archive contains `libellus` and `libellus-mcp`. Check `SHA256SUMS`
+before you run a binary. Libellus is not published to crates.io or npm.
+
+Or build it from this repository (Rust 1.83 or newer):
 
 ```sh
 git clone https://github.com/IronAdamant/Libellus

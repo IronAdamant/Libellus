@@ -10,13 +10,23 @@ notepad and number ledger for each AI agent. It does not call an LLM.
 
 ## Active context
 
-- **Version:** 1.0.0, the first complete surface. Not tagged and not published.
+- **Version:** 1.0.0. Aron approved the tag. The release workflow publishes
+  GitHub release archives on `v*`. Not on crates.io or npm.
 - **Built:** note, get, resolve, ls, brief, promote, spend, ledger; `libellus hook`;
   `LIBELLUS_TOOLS`, `LIBELLUS_DISABLE`, `LIBELLUS_AGENT`.
-- **Not in this tree:** release binaries, npm packages, an MCP Registry entry.
-  Do not tag until Aron says so.
+- **Not in this tree:** npm packages, an MCP Registry entry.
 
 ## Session log
+
+---
+
+## 1.0.0: release workflow
+
+**Date:** 2026-11-25
+
+- Added `.github/workflows/release.yml`. A `v*` tag builds Linux x64, macOS x64,
+  macOS arm64, and Windows x64, writes SHA256SUMS, and opens a GitHub release
+  whose notes are the matching CHANGELOG section. No npm and no crates.io.
 
 ---
 

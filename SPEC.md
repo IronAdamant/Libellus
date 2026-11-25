@@ -198,7 +198,8 @@ Newline-delimited JSON-RPC 2.0 on stdio.
 
 ## 7. Not in this tree
 
-Release binaries, npm packages, and an MCP Registry entry are not part of
-this repository yet. Libellus does not price models, does not read another
-agent's notes (that is Relatum, after promote), and does not resolve an
-`adsertio:` pointer.
+A `v*` tag runs `.github/workflows/release.yml`, which publishes GitHub
+release archives and SHA256SUMS. npm packages and an MCP Registry entry are
+not part of this repository. Libellus does not price models, does not read
+another agent's notes (that is Relatum, after promote), and does not resolve
+an `adsertio:` pointer.
