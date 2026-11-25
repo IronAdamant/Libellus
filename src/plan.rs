@@ -743,7 +743,7 @@ fn save(
         for id in &subtree {
             let from = board::task_path(&dir, id)?;
             let to = board::task_path(&target, id)?;
-            std::fs::rename(&from, &to).map_err(|err| {
+            fsx::rename(&from, &to).map_err(|err| {
                 stop(
                     &done,
                     format!("cannot move {} to {}: {err}", from.display(), to.display()),

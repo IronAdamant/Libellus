@@ -53,7 +53,7 @@ pub fn write_atomic(dest: &Path, bytes: &[u8], overwrite: bool) -> Result<(), St
             .map_err(|e| format!("cannot sync {}: {e}", tmp.display()))?;
     }
     if overwrite {
-        fs::rename(&tmp, dest).map_err(|e| format!("cannot replace {}: {e}", dest.display()))?;
+        rename(&tmp, dest).map_err(|e| format!("cannot replace {}: {e}", dest.display()))?;
         guard.armed = false;
     } else {
         match fs::hard_link(&tmp, dest) {
@@ -65,6 +65,30 @@ pub fn write_atomic(dest: &Path, bytes: &[u8], overwrite: bool) -> Result<(), St
         }
     }
     Ok(())
+}
+
+/// `fs::rename`, retried for up to 2 seconds while Windows reports the source
+/// or destination busy. A virus scanner or the search indexer opens a file
+/// just written without sharing delete access, and a rename over it then
+/// fails with access denied (5) or a sharing violation (32) until it lets go;
+/// under load that can take a few hundred milliseconds. Elsewhere this is one
+/// plain rename.
+pub fn rename(from: &Path, to: &Path) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut pause = std::time::Duration::from_millis(2);
+    loop {
+        match fs::rename(from, to) {
+            Err(e) if rename_busy(&e) && std::time::Instant::now() < deadline => {
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(std::time::Duration::from_millis(50));
+            }
+            other => return other,
+        }
+    }
+}
+
+fn rename_busy(e: &std::io::Error) -> bool {
+    cfg!(windows) && matches!(e.raw_os_error(), Some(5 | 32))
 }
 
 /// Create a folder (and any missing parents) readable only by the current user
