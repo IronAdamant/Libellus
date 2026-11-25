@@ -22,11 +22,7 @@ pub fn from_argv(argv: &[String]) -> Result<String, String> {
                 agent = Some(value);
             }
             "--host" => host = value,
-            other => {
-                return Err(format!(
-                    "unknown argument \"{other}\" (use --agent and --host)"
-                ))
-            }
+            other => return Err(format!("unknown flag {other} (use --agent and --host)")),
         }
         i += 2;
     }

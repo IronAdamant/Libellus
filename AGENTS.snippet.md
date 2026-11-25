@@ -11,7 +11,11 @@ writes a Relatum note. Libellus does not call a model.
   is already resolved stays as it is.
 - Point at proof instead of copying it: `evidence: ["trammel:plan-3/step-2"]`.
 - Record spend per step with `libellus_spend` (numbers you report; Libellus only
-  adds them). Read totals with `libellus_ledger`.
+  adds them). Each call appends a line. Read totals with `libellus_ledger`.
+- `libellus_ls` returns the newest page (`limit`, default 50, minimum 1).
+  Pass `before_id` from `next_before_id` for the next older page. `offset` is
+  the older knob and can repeat a note if one is written between calls.
+  `total` is every matching note, not the page.
 - At session start and after compaction, put the brief back into the session
   before doing anything else. `libellus hook --agent main --host generic` prints
   the command `libellus brief --agent main`. `--host claude` and `--host cursor`

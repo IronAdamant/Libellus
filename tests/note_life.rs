@@ -268,8 +268,8 @@ fn resolve_rejects_a_bad_outcome_and_a_foreign_note() {
             "no",
         ],
     );
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown argument"));
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown flag"));
     let out = cli(&dir, &["get", "--agent", "main", "--id"]);
     assert_eq!(out.status.code(), Some(2));
 }

@@ -114,7 +114,8 @@ impl Tool {
                     f.push(("items", Value::obj(vec![("type", Value::str("string"))])));
                 }
                 if p.kind == Kind::UInt {
-                    f.push(("minimum", Value::int(0)));
+                    let min = if p.name == "limit" { 1 } else { 0 };
+                    f.push(("minimum", Value::int(min)));
                 }
                 if !p.choices.is_empty() {
                     f.push((
@@ -174,7 +175,13 @@ impl Tool {
             let v = pairs.iter().find(|(k, _)| k == p.name).map(|(_, v)| v);
             match v {
                 None | Some(Value::Null) if p.required => {
-                    return Err(format!("missing required argument: {}", p.name))
+                    if p.name == "agent" {
+                        return Err(
+                            "missing required argument: agent. Pass agent, or set LIBELLUS_AGENT."
+                                .into(),
+                        );
+                    }
+                    return Err(format!("missing required argument: {}", p.name));
                 }
                 None | Some(Value::Null) => {}
                 Some(v) => check_value(p, v)?,
@@ -205,7 +212,15 @@ fn check_value(p: &Param, v: &Value) -> Result<(), String> {
             Ok(())
         }
         (Kind::Str, _) => bad("a string"),
-        (Kind::UInt, v) if v.as_u64().is_some() => Ok(()),
+        (Kind::UInt, v) if v.as_u64().is_some() => {
+            let n = v.as_u64().unwrap();
+            if p.name == "limit" && n < 1 {
+                return Err(format!(
+                    "limit is {n}. It must be a whole number from 1 up to 18446744073709551615."
+                ));
+            }
+            Ok(())
+        }
         (Kind::UInt, _) => Err(format!(
             "{} must be a whole number from 0 up to 18446744073709551615",
             p.name

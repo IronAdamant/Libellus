@@ -12,6 +12,13 @@ use std::path::Path;
 pub const KINDS: &[&str] = &["decision", "dead-end", "question", "finding", "context"];
 pub const STATUSES: &[&str] = &["open", "resolved"];
 pub const MAX_SUMMARY: usize = 200;
+/// Largest note file we will read. A short note is far smaller than this.
+pub const MAX_NOTE_BYTES: u64 = 1_048_576;
+
+pub struct Loaded {
+    pub notes: Vec<Note>,
+    pub warnings: Vec<String>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Note {
@@ -91,14 +98,17 @@ pub fn note_path(store: &Store, agent: &str, id: &str) -> Result<std::path::Path
     Ok(fsx::join_id(&store.notes_dir(agent)?, id, 2)?.with_extension("md"))
 }
 
-/// One note. Missing, corrupt, a symlink, or a file whose `agent` field is
-/// not `agent` is an error. Never an empty success.
+/// One note. Missing, corrupt, a symlink, an oversized file, or a file whose
+/// `agent` field is not `agent` is an error. Never an empty success.
 pub fn load_one(store: &Store, agent: &str, id: &str) -> Result<Note, String> {
     let path = note_path(store, agent, id)?;
+    reject_huge_note(&path)?;
     let meta = match fs::symlink_metadata(&path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(format!("no note \"{id}\" for agent \"{agent}\""));
+            return Err(format!(
+                "no note \"{id}\" for agent \"{agent}\". List ids with libellus_ls, or create one with libellus_note."
+            ));
         }
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
     };
@@ -255,20 +265,81 @@ impl Note {
     }
 }
 
-/// Every note of an agent, oldest first. A damaged note fails the whole read.
-pub fn load_all(store: &Store, agent: &str) -> Result<Vec<Note>, String> {
+/// Every note of an agent, oldest first. A damaged or oversized note fails
+/// the whole read. A note whose `agent` field names someone else is skipped
+/// and listed in `warnings`.
+pub fn load_all(store: &Store, agent: &str) -> Result<Loaded, String> {
     let dir = store.notes_dir(agent)?;
     let mut ids = Vec::new();
     collect(&dir, &dir, &mut ids)?;
-    let mut notes = Vec::new();
-    for (id, path) in ids {
-        let text = fsx::read_strict(&path)?;
-        notes.push(
-            Note::parse(&id, &text)
-                .map_err(|e| format!("corrupt note {} ({}): {e}", id, path.display()))?,
-        );
-    }
+    let mut notes = if ids.len() < 128 {
+        read_notes(&ids)?
+    } else {
+        read_notes_parallel(&ids)?
+    };
     notes.sort_by(|a, b| a.created.cmp(&b.created).then(a.id.cmp(&b.id)));
+    let mut warnings = Vec::new();
+    notes.retain(|note| {
+        if note.agent == agent {
+            true
+        } else {
+            warnings.push(format!(
+                "skipped note {}: agent field is {}, not {agent}",
+                note.id, note.agent
+            ));
+            false
+        }
+    });
+    Ok(Loaded { notes, warnings })
+}
+
+fn reject_huge_note(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.len() > MAX_NOTE_BYTES => Err(format!(
+            "note file {} is {} bytes, over the {MAX_NOTE_BYTES} byte cap",
+            path.display(),
+            meta.len()
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn read_one(id: &str, path: &Path) -> Result<Note, String> {
+    reject_huge_note(path)?;
+    let text = fsx::read_strict(path)?;
+    Note::parse(id, &text).map_err(|e| format!("corrupt note {id} ({}): {e}", path.display()))
+}
+
+fn read_notes(ids: &[(String, std::path::PathBuf)]) -> Result<Vec<Note>, String> {
+    let mut notes = Vec::with_capacity(ids.len());
+    for (id, path) in ids {
+        notes.push(read_one(id, path)?);
+    }
+    Ok(notes)
+}
+
+/// Read many small note files at once. The first error in directory order is
+/// the one returned, same as a single-threaded walk.
+fn read_notes_parallel(ids: &[(String, std::path::PathBuf)]) -> Result<Vec<Note>, String> {
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(2, 8);
+    let chunk = ids.len().div_ceil(workers).max(1);
+    let mut slots: Vec<Option<Result<Note, String>>> = (0..ids.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        for (chunk_ids, chunk_slots) in ids.chunks(chunk).zip(slots.chunks_mut(chunk)) {
+            scope.spawn(move || {
+                for ((id, path), slot) in chunk_ids.iter().zip(chunk_slots.iter_mut()) {
+                    *slot = Some(read_one(id, path));
+                }
+            });
+        }
+    });
+    let mut notes = Vec::with_capacity(ids.len());
+    for slot in slots {
+        notes.push(slot.ok_or_else(|| "internal error: a note was not read".to_string())??);
+    }
     Ok(notes)
 }
 

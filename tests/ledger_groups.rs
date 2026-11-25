@@ -124,10 +124,15 @@ fn ledger_sums_every_agent_and_a_damaged_file_stays_damaged() {
     // main is still damaged, so the all-agent read fails there first.
     fs::write(&path, "").unwrap();
     let out = cli(&dir, &["ledger", "--agent", "sub-2"]);
+    let body = String::from_utf8(out.stdout).unwrap();
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("overflow"),
+        out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        body.contains("ledger_error") && body.contains("line 2"),
+        "{body}"
     );
     assert_eq!(fs::read_to_string(&other).unwrap(), huge);
 
@@ -137,8 +142,8 @@ fn ledger_sums_every_agent_and_a_damaged_file_stays_damaged() {
     let bad = cli(&dir, &["ledger", "--agent", "Main"]);
     assert_eq!(bad.status.code(), Some(1));
     let bad = cli(&dir, &["ledger", "--colour", "red"]);
-    assert_eq!(bad.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown argument"));
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown flag"));
 }
 
 #[test]

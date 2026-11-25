@@ -35,13 +35,16 @@ pub struct Totals {
 impl Totals {
     fn add(&mut self, e: &Entry) -> Result<(), String> {
         let over = || "ledger totals overflowed a 64-bit number".to_string();
-        self.entries += 1;
-        self.tokens_in = self.tokens_in.checked_add(e.tokens_in).ok_or_else(over)?;
-        self.tokens_out = self.tokens_out.checked_add(e.tokens_out).ok_or_else(over)?;
-        self.cost_micro_usd = self
+        let tokens_in = self.tokens_in.checked_add(e.tokens_in).ok_or_else(over)?;
+        let tokens_out = self.tokens_out.checked_add(e.tokens_out).ok_or_else(over)?;
+        let cost_micro_usd = self
             .cost_micro_usd
             .checked_add(e.cost_micro_usd)
             .ok_or_else(over)?;
+        self.tokens_in = tokens_in;
+        self.tokens_out = tokens_out;
+        self.cost_micro_usd = cost_micro_usd;
+        self.entries += 1;
         Ok(())
     }
 
@@ -119,20 +122,58 @@ impl Entry {
 }
 
 /// Append one entry as a single `write` of a whole line.
-pub fn append(store: &Store, entry: &Entry) -> Result<(), String> {
+///
+/// The ledger is locked for the read, the overflow check, and the write.
+/// The new totals are checked before any byte is appended. On overflow the
+/// file is left unchanged. The returned entries include this entry.
+pub fn append(store: &Store, entry: &Entry) -> Result<Vec<Entry>, String> {
     let path = store.ledger_path(&entry.agent)?;
     if let Some(dir) = path.parent() {
         fsx::make_private_dir(dir)?;
     }
-    // Refuse to extend a ledger that is already damaged.
-    read(store, &entry.agent)?;
+    let _lock = fsx::Lock::acquire(&path)?;
+    // Refuse to extend a ledger that is already damaged or already unsummable.
+    let existing = read(store, &entry.agent)?;
+    let (so_far, bad) = sum_prefix(&existing);
+    if let Some(line) = bad {
+        return Err(format!(
+            "not appended: {} line {line}: ledger totals overflowed a 64-bit number. The file was not changed.",
+            path.display()
+        ));
+    }
+    let mut totals = so_far;
+    if totals.add(entry).is_err() {
+        return Err(format!(
+            "not appended: adding this entry to {} would overflow a 64-bit total. The file was not changed.",
+            path.display()
+        ));
+    }
     let mut line = entry.to_line();
     line.push('\n');
     let mut f = fsx::open_append_private(&path)?;
     f.write_all(line.as_bytes())
         .map_err(|e| format!("cannot append to {}: {e}", path.display()))?;
     f.sync_all()
-        .map_err(|e| format!("cannot sync {}: {e}", path.display()))
+        .map_err(|e| format!("cannot sync {}: {e}", path.display()))?;
+    // Re-read before releasing the lock so the count is the file, not a
+    // guess taken beside another writer.
+    read(store, &entry.agent)
+}
+
+/// Read a ledger and sum what fits. A corrupt line is still a hard error.
+/// An overflow is reported as `overflow_line` (1-based) and the entries stop
+/// before that line.
+pub fn read_summed(
+    store: &Store,
+    agent: &str,
+) -> Result<(Vec<Entry>, Totals, Option<usize>), String> {
+    let entries = read(store, agent)?;
+    let (totals, bad) = sum_prefix(&entries);
+    let kept = match bad {
+        Some(line) => entries[..line - 1].to_vec(),
+        None => entries,
+    };
+    Ok((kept, totals, bad))
 }
 
 pub fn read(store: &Store, agent: &str) -> Result<Vec<Entry>, String> {
@@ -157,11 +198,25 @@ pub fn read(store: &Store, agent: &str) -> Result<Vec<Entry>, String> {
 }
 
 pub fn total(entries: &[Entry]) -> Result<Totals, String> {
-    let mut t = Totals::default();
-    for e in entries {
-        t.add(e)?;
+    let (totals, bad) = sum_prefix(entries);
+    match bad {
+        Some(line) => Err(format!(
+            "ledger totals overflowed a 64-bit number at line {line}"
+        )),
+        None => Ok(totals),
     }
-    Ok(t)
+}
+
+/// Totals of the leading entries that fit in 64 bits. `overflow_line` is the
+/// 1-based index of the first entry that does not fit, when there is one.
+pub fn sum_prefix(entries: &[Entry]) -> (Totals, Option<usize>) {
+    let mut totals = Totals::default();
+    for (i, entry) in entries.iter().enumerate() {
+        if totals.add(entry).is_err() {
+            return (totals, Some(i + 1));
+        }
+    }
+    (totals, None)
 }
 
 /// Totals grouped by task, sorted by task name.

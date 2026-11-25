@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.1.0 (unreleased)
+
+Not tagged. Same on-disk format as 1.0.0.
+
+- `libellus_ls` takes `offset` (default 0) and `before_id`. The reply adds
+  `offset`, `returned`, `truncated`, `next_offset`, and `next_before_id`.
+  `before_id` is the stable cursor. `limit` must be at least 1. `total` is
+  still the full count. `offset` 0 is the 1.0.0 page.
+- The brief text adds a `Next:` line only when a question is open or a
+  decision or dead end is not promoted. The headings and cost lines are
+  unchanged. `text` stays the short form; the arrays stay for callers that
+  parse them.
+- A missing note, a duplicate id, and a second resolve name the call that
+  fixes it. A missing `agent` mentions `LIBELLUS_AGENT`.
+- A spend checks the 64-bit total before appending and does not write when it
+  would overflow. `ledger` and `brief` report an already unsummable ledger as
+  `ledger_error` instead of failing the whole call. `libellus_check` fails on
+  it. Resolve and spend take an exclusive lock file.
+- A note file over 1 MiB is an error. A note whose `agent` field does not
+  match its folder is skipped by `ls` and `brief` with a warning, refused by
+  `get`, and failed by `check`.
+- Unknown CLI flags are reported as `unknown flag`. `libellus_check` is an
+  MCP tool. `--host` on `brief` is CLI only.
+- Listing and the brief read many notes at once on more than one CPU. A spend
+  does not parse the ledger a second time. Numbers are in `docs/perf/`.
+
 ## 1.0.0
 
 First release. A `v*` tag builds `libellus` and `libellus-mcp` for Linux x64,

@@ -8,7 +8,7 @@
 
 use crate::json::Value;
 use crate::tool::{Kind, Tool};
-use crate::{fsx, ledger, note, store::Store, tools, SERVER, VERSION};
+use crate::{store::Store, tools, SERVER, VERSION};
 
 const HELP: &str = "libellus: a private notepad and number ledger for AI agents
 
@@ -18,7 +18,7 @@ USAGE
                 [--evidence tool:ref]... [--tags T]...
   libellus get --agent A --id I
   libellus resolve --agent A --id I --outcome TEXT
-  libellus ls --agent A [--kind K] [--status S] [--limit N] [--bodies]
+  libellus ls --agent A [--kind K] [--status S] [--limit N] [--offset N] [--before_id ID] [--bodies]
   libellus brief --agent A [--max_items N] [--host text|cursor]
                                               print the compaction brief as text
   libellus promote --agent A --id I --scope SCOPE
@@ -44,25 +44,18 @@ pub fn run(args: &[String], as_mcp: bool) -> i32 {
         return 2;
     };
     match cmd.as_str() {
-        "--version" | "-V" | "version" => {
-            println!("{{\"name\":\"libellus\",\"version\":\"{VERSION}\"}}");
-            0
-        }
-        "--help" | "-h" | "help" => {
-            println!("{HELP}");
-            0
-        }
+        "--version" | "-V" | "version" => write_out(&format!(
+            "{{\"name\":\"libellus\",\"version\":\"{VERSION}\"}}\n"
+        )),
+        "--help" | "-h" | "help" => write_out(&format!("{HELP}\n")),
         "mcp" | "serve-mcp" => crate::mcp::serve(&SERVER),
         "init" => finish(
             Store::init()
                 .map(|s| Value::obj(vec![("store", Value::String(s.dir.display().to_string()))])),
         ),
-        "check" => finish(check()),
+        "check" => finish(crate::check::run()),
         "hook" => match crate::hook::from_argv(&args[1..]) {
-            Ok(text) => {
-                print!("{text}");
-                0
-            }
+            Ok(text) => write_out(&text),
             Err(e) => {
                 eprintln!("error: {e}");
                 2
@@ -76,45 +69,74 @@ pub fn run(args: &[String], as_mcp: bool) -> i32 {
                 eprintln!("unknown command \"{other}\"\n\n{HELP}");
                 2
             }
-            Some(tool) => match build_args(tool, &args[1..]) {
-                Err(e) => {
-                    eprintln!("{e}");
-                    2
-                }
-                Ok(v) => {
-                    let v = crate::tool::fill_agent_default(tool, v);
-                    let out = tool.validate(&v).and_then(|a| (tool.run)(&a));
-                    if other == "brief" {
-                        if let Ok(value) = &out {
-                            let text = value.get("text").and_then(Value::as_str).unwrap_or("");
-                            if v.get("host").and_then(Value::as_str) == Some("cursor") {
-                                println!(
-                                    "{}",
-                                    Value::obj(vec![(
-                                        "additional_context",
-                                        Value::String(text.to_string()),
-                                    )])
-                                    .to_json()
-                                );
-                            } else {
-                                print!("{text}");
-                            }
-                            return 0;
+            Some(tool) => {
+                let (argv, host) = if other == "brief" {
+                    match split_brief_host(&args[1..]) {
+                        Ok(pair) => pair,
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            return 2;
                         }
                     }
-                    finish(out)
+                } else {
+                    (args[1..].to_vec(), None)
+                };
+                match build_args(tool, &argv) {
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        2
+                    }
+                    Ok(v) => {
+                        let v = crate::tool::fill_agent_default(tool, v);
+                        let out = tool.validate(&v).and_then(|a| (tool.run)(&a));
+                        if other == "brief" {
+                            if let Ok(value) = &out {
+                                let text = value.get("text").and_then(Value::as_str).unwrap_or("");
+                                if host.as_deref() == Some("cursor") {
+                                    return write_out(&format!(
+                                        "{}\n",
+                                        Value::obj(vec![(
+                                            "additional_context",
+                                            Value::String(text.to_string()),
+                                        )])
+                                        .to_json()
+                                    ));
+                                }
+                                return write_out(text);
+                            }
+                        }
+                        finish(out)
+                    }
                 }
-            },
+            }
         },
     }
 }
 
 fn finish(r: Result<Value, String>) -> i32 {
     match r {
-        Ok(v) => {
-            println!("{}", v.to_json());
-            0
+        Ok(v) => write_out(&format!("{}\n", v.to_json())),
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
         }
+    }
+}
+
+/// Write to stdout. A closed pipe (EPIPE), as in `libellus get | head`, exits 0
+/// instead of panicking.
+fn write_out(text: &str) -> i32 {
+    let mut out = std::io::stdout().lock();
+    match std::io::Write::write_all(&mut out, text.as_bytes()) {
+        Ok(()) => match std::io::Write::flush(&mut out) {
+            Ok(()) => 0,
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
         Err(e) => {
             eprintln!("error: {e}");
             1
@@ -133,8 +155,10 @@ fn build_args(tool: &Tool, argv: &[String]) -> Result<Value, String> {
             )
         })?;
         let flag = flag.replace('-', "_");
-        let param = tool.params.iter().find(|p| p.name == flag);
-        let kind = param.map_or(Kind::Str, |p| p.kind);
+        let Some(param) = tool.params.iter().find(|p| p.name == flag) else {
+            return Err(format!("unknown flag --{}", flag.replace('_', "-")));
+        };
+        let kind = param.kind;
         let value = argv.get(i + 1).filter(|v| !v.starts_with("--"));
         match (kind, value) {
             (Kind::Bool, Some(v)) if v == "true" || v == "false" => {
@@ -183,50 +207,29 @@ fn build_args(tool: &Tool, argv: &[String]) -> Result<Value, String> {
     Ok(Value::Object(pairs))
 }
 
-/// Read every note and ledger. Any damage is an error; stray temp files are
-/// reported so they can be removed.
-fn check() -> Result<Value, String> {
-    let store = Store::open()?;
-    let mut agents = Vec::new();
-    let mut strays = Vec::new();
-    for agent in store.agents()? {
-        let notes = note::load_all(&store, &agent)?;
-        let entries = ledger::read(&store, &agent)?;
-        agents.push(Value::obj(vec![
-            ("agent", Value::str(&agent)),
-            ("notes", Value::uint(notes.len() as u64)),
-            ("ledger_entries", Value::uint(entries.len() as u64)),
-        ]));
-        find_temps(&store.agent_dir(&agent)?, &mut strays);
-    }
-    Ok(Value::obj(vec![
-        ("ok", Value::Bool(true)),
-        ("agents", Value::Array(agents)),
-        (
-            "stray_temp_files",
-            Value::Array(
-                strays
-                    .iter()
-                    .map(|s| Value::str(fsx::clip(s, 300)))
-                    .collect(),
-            ),
-        ),
-    ]))
-}
-
-fn find_temps(dir: &std::path::Path, out: &mut Vec<String>) {
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if e.file_type().is_ok_and(|t| t.is_dir()) {
-                find_temps(&p, out);
-            } else if p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with('.') && n.contains(".tmp-"))
-            {
-                out.push(p.display().to_string());
+/// `--host` is a CLI presentation flag for `brief`, not an MCP argument.
+fn split_brief_host(argv: &[String]) -> Result<(Vec<String>, Option<String>), String> {
+    let mut rest = Vec::new();
+    let mut host = None;
+    let mut i = 0;
+    while i < argv.len() {
+        if argv[i] == "--host" {
+            let value = argv
+                .get(i + 1)
+                .filter(|v| !v.starts_with("--"))
+                .ok_or_else(|| "--host needs a value".to_string())?;
+            if value != "text" && value != "cursor" {
+                return Err(format!("--host must be text or cursor, got \"{value}\""));
             }
+            if host.is_some() {
+                return Err("--host given twice".into());
+            }
+            host = Some(value.to_string());
+            i += 2;
+        } else {
+            rest.push(argv[i].clone());
+            i += 1;
         }
     }
+    Ok((rest, host))
 }

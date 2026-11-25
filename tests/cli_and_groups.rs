@@ -33,13 +33,9 @@ fn cli_rejects_bad_flags_with_exit_2() {
     );
     assert_eq!(cli(&dir, &["frobnicate"]).status.code(), Some(2));
     assert_eq!(cli(&dir, &[]).status.code(), Some(2));
-    // An unknown flag is passed on and refused by validation (exit 1).
-    assert_eq!(
-        cli(&dir, &["ls", "--agent", "main", "--colour", "red"])
-            .status
-            .code(),
-        Some(1)
-    );
+    let unknown = cli(&dir, &["ls", "--agent", "main", "--colour", "red"]);
+    assert_eq!(unknown.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("unknown flag"));
     assert!(cli(&dir, &["--version"]).status.success());
 }
 
