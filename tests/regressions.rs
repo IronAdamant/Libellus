@@ -81,6 +81,10 @@ fn spend_does_not_append_when_the_total_would_overflow() {
         text.contains("line 2") && text.contains("# Libellus brief"),
         "{text}"
     );
+    assert!(
+        text.contains("(1 ledger entries)") && body.contains("\"entries\":1"),
+        "brief and ledger must report the same count\nbrief: {text}\nledger: {body}"
+    );
     let check = cli(&dir, &["check"]);
     assert_eq!(check.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&check.stderr).contains("line 2"));
@@ -233,6 +237,16 @@ fn a_stale_resolve_lock_is_replaced_and_a_fresh_one_is_reported() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("locked"));
 }
 
+fn agent_entries(body: &str) -> u64 {
+    let key = "\"agent_total\":{\"entries\":";
+    let rest = body.split(key).nth(1).unwrap_or("");
+    rest.split(|c: char| !c.is_ascii_digit())
+        .next()
+        .unwrap_or("")
+        .parse()
+        .unwrap_or(0)
+}
+
 #[test]
 fn concurrent_spends_all_land_and_each_total_includes_itself() {
     let dir = project("reg-spend");
@@ -241,8 +255,8 @@ fn concurrent_spends_all_land_and_each_total_includes_itself() {
         .map(|_| {
             let dir = dir.clone();
             std::thread::spawn(move || {
-                let mut codes = Vec::new();
-                for _ in 0..5 {
+                let mut seen = Vec::new();
+                for _ in 0..10 {
                     let out = cli(
                         &dir,
                         &[
@@ -259,20 +273,30 @@ fn concurrent_spends_all_land_and_each_total_includes_itself() {
                     assert!(!err.contains("partial line"), "{err}");
                     assert!(out.status.success(), "{err}");
                     let body = String::from_utf8(out.stdout).unwrap();
-                    assert!(body.contains("\"entries\":"), "{body}");
-                    codes.push(body);
+                    seen.push(agent_entries(&body));
                 }
-                codes
+                seen
             })
         })
         .collect();
+    let mut counts = Vec::new();
     for handle in handles {
-        for body in handle.join().unwrap() {
-            assert!(body.contains("\"recorded\":true"), "{body}");
-        }
+        counts.extend(handle.join().unwrap());
     }
+    counts.sort_unstable();
+    let unique = {
+        let mut u = counts.clone();
+        u.dedup();
+        u
+    };
+    assert_eq!(
+        unique.len(),
+        counts.len(),
+        "agent_total.entries collided: {counts:?}"
+    );
+    assert_eq!(counts, (1..=counts.len() as u64).collect::<Vec<_>>());
     let text = fs::read_to_string(dir.join(".libellus/agents/main/ledger.jsonl")).unwrap();
-    assert_eq!(text.lines().count(), 40, "{text}");
+    assert_eq!(text.lines().count(), counts.len(), "{text}");
     assert!(text.ends_with('\n'));
 }
 
@@ -354,8 +378,12 @@ fn closed_stdout_does_not_panic_and_limit_zero_is_rejected() {
     assert!(!String::from_utf8_lossy(&out.stderr).contains("panicked"));
 
     let bad = cli(&dir, &["ls", "--agent", "main", "--limit", "0"]);
+    let err = String::from_utf8_lossy(&bad.stderr);
     assert_eq!(bad.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&bad.stderr).contains("from 1"));
+    assert!(
+        err.contains("limit is 0") && err.contains("from 1 up to 18446744073709551615"),
+        "{err}"
+    );
     let missing = cli(&dir, &["brief"]);
     assert!(String::from_utf8_lossy(&missing.stderr).contains("LIBELLUS_AGENT"));
 }

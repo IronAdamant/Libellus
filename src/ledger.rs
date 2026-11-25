@@ -35,13 +35,16 @@ pub struct Totals {
 impl Totals {
     fn add(&mut self, e: &Entry) -> Result<(), String> {
         let over = || "ledger totals overflowed a 64-bit number".to_string();
-        self.entries += 1;
-        self.tokens_in = self.tokens_in.checked_add(e.tokens_in).ok_or_else(over)?;
-        self.tokens_out = self.tokens_out.checked_add(e.tokens_out).ok_or_else(over)?;
-        self.cost_micro_usd = self
+        let tokens_in = self.tokens_in.checked_add(e.tokens_in).ok_or_else(over)?;
+        let tokens_out = self.tokens_out.checked_add(e.tokens_out).ok_or_else(over)?;
+        let cost_micro_usd = self
             .cost_micro_usd
             .checked_add(e.cost_micro_usd)
             .ok_or_else(over)?;
+        self.tokens_in = tokens_in;
+        self.tokens_out = tokens_out;
+        self.cost_micro_usd = cost_micro_usd;
+        self.entries += 1;
         Ok(())
     }
 
@@ -152,9 +155,9 @@ pub fn append(store: &Store, entry: &Entry) -> Result<Vec<Entry>, String> {
         .map_err(|e| format!("cannot append to {}: {e}", path.display()))?;
     f.sync_all()
         .map_err(|e| format!("cannot sync {}: {e}", path.display()))?;
-    let mut entries = existing;
-    entries.push(entry.clone());
-    Ok(entries)
+    // Re-read before releasing the lock so the count is the file, not a
+    // guess taken beside another writer.
+    read(store, &entry.agent)
 }
 
 /// Read a ledger and sum what fits. A corrupt line is still a hard error.

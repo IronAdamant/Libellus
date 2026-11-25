@@ -443,7 +443,10 @@ fn brief(a: &Args) -> Result<Value, String> {
     }
     text.push_str(&format!(
         "\n## Costs\n- total: {} in, {} out tokens, {} micro-USD ({} ledger entries)\n",
-        totals.tokens_in, totals.tokens_out, totals.cost_micro_usd, totals.entries
+        totals.tokens_in,
+        totals.tokens_out,
+        totals.cost_micro_usd,
+        entries.len()
     ));
     for (task, t) in tasks.iter().take(max) {
         text.push_str(&format!(

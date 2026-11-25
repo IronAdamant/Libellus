@@ -215,9 +215,9 @@ fn check_value(p: &Param, v: &Value) -> Result<(), String> {
         (Kind::UInt, v) if v.as_u64().is_some() => {
             let n = v.as_u64().unwrap();
             if p.name == "limit" && n < 1 {
-                return Err(
-                    "limit must be a whole number from 1 up to 18446744073709551615".into(),
-                );
+                return Err(format!(
+                    "limit is {n}. It must be a whole number from 1 up to 18446744073709551615."
+                ));
             }
             Ok(())
         }

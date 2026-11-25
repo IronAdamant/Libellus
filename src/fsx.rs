@@ -270,12 +270,10 @@ impl Lock {
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        // Unlink while the handle is still open. On Unix the name goes away
-        // immediately. On Windows the open allows delete sharing. Try again
-        // after the handle is closed, in case the first unlink was refused.
+        // Unlink once, while this handle is still open, then close. A second
+        // unlink after the close can delete a lock the next writer just created.
         let _ = fs::remove_file(&self.path);
         self.file.take();
-        let _ = fs::remove_file(&self.path);
     }
 }
 
