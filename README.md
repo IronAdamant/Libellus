@@ -107,6 +107,35 @@ libellus: disable ledger
 `libellus: tools core, ledger` lists only what you want instead. See
 [AGENTS.snippet.md](AGENTS.snippet.md) for text to paste into a project.
 
+`LIBELLUS_TOOLS` and `LIBELLUS_DISABLE`, when set, replace that line. `core`
+cannot be disabled. A typo falls back to the core tools and says why.
+
+## Compaction hook
+
+After a session starts, and again after the context is compacted, the brief
+should be put back into the session. The agent often forgets to ask.
+`libellus hook` prints a snippet a person can paste into the host's hook file.
+It does not install the hook, and it does not run in the background.
+
+```sh
+libellus hook --agent main --host generic
+libellus hook --agent main --host claude
+libellus hook --agent main --host cursor
+```
+
+Run it at session start and after compaction. The generic snippet is the
+command `libellus brief --agent main`. The claude snippet is a SessionStart
+hook, including the compact matcher, which runs after compaction. That
+command's plain text is added to the session. The cursor snippet is a
+sessionStart hook: the command prints `{"additional_context": "..."}` and
+Cursor adds that text when a chat starts. Cursor's preCompact hook cannot put
+text back into the model, so after compaction in Cursor you run the brief
+again and put the text into the session yourself.
+
+`LIBELLUS_AGENT` fills in `--agent` when a command needs an agent and the flag
+is left out. `libellus ledger` does not use it. With no `--agent`, the ledger
+sums every agent in the store.
+
 ## Build and test
 
 ```sh

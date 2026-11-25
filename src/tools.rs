@@ -87,6 +87,13 @@ pub static TOOLS: &[Tool] = &[
         params: &[
             AGENT,
             Param { name: "max_items", kind: Kind::UInt, required: false, doc: "Most notes per section. Default 5.", choices: &[] },
+            Param {
+                name: "host",
+                kind: Kind::Str,
+                required: false,
+                doc: "CLI only. text (default) prints the brief. cursor prints {\"additional_context\": ...} for a Cursor sessionStart hook.",
+                choices: &["text", "cursor"],
+            },
         ],
         run: brief,
     },

@@ -31,6 +31,35 @@ pub struct Tool {
     pub run: fn(&Args) -> Result<Value, String>,
 }
 
+/// When `agent` is required and missing, use `LIBELLUS_AGENT`. A present
+/// value, including an empty one, is left alone. Tools where `agent` is
+/// optional (the all-agent ledger) are not filled.
+pub fn fill_agent_default(tool: &Tool, args: Value) -> Value {
+    let needs = tool.params.iter().any(|p| p.name == "agent" && p.required);
+    if !needs {
+        return args;
+    }
+    let mut pairs = match args {
+        Value::Object(pairs) => pairs,
+        Value::Null => Vec::new(),
+        other => return other,
+    };
+    let present = pairs
+        .iter()
+        .any(|(k, v)| k == "agent" && !matches!(v, Value::Null));
+    if !present {
+        if let Some(name) = std::env::var("LIBELLUS_AGENT")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            pairs.retain(|(k, _)| k != "agent");
+            pairs.push(("agent".to_string(), Value::str(name)));
+        }
+    }
+    Value::Object(pairs)
+}
+
 /// Arguments that passed `Tool::validate`.
 pub struct Args {
     pairs: Vec<(String, Value)>,

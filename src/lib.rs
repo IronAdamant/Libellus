@@ -4,6 +4,7 @@
 pub mod cli;
 pub mod fsx;
 pub mod groups;
+pub mod hook;
 pub mod json;
 pub mod ledger;
 pub mod mcp;
