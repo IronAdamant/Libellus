@@ -21,6 +21,7 @@ USAGE
   libellus brief --agent A [--max_items N]       print the compaction brief as text
   libellus spend --agent A --task T [--step S] [--model M] [--tokens_in N] [--tokens_out N]
                  [--cost_micro_usd N] [--note TEXT]
+  libellus ledger [--agent A] [--task T] [--step S]
   libellus check                      read every note and ledger; fail on any damage
   libellus mcp                        start the stdio MCP server (same as libellus-mcp)
   libellus --version

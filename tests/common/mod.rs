@@ -29,14 +29,25 @@ pub fn init(dir: &Path) {
 /// Send raw bytes to the MCP server (one or more lines), close stdin, and
 /// return each reply line parsed loosely as text.
 pub fn talk(dir: &Path, input: &[u8]) -> Vec<String> {
-    let mut child = Command::new(SERVER)
-        .current_dir(dir)
+    talk_env(dir, input, &[])
+}
+
+/// `talk`, with extra environment variables on the server process.
+pub fn talk_env(dir: &Path, input: &[u8], env: &[(&str, &str)]) -> Vec<String> {
+    let mut cmd = Command::new(SERVER);
+    cmd.current_dir(dir)
         .env_remove("LIBELLUS_DIR")
+        .env_remove("LIBELLUS_TOOLS")
+        .env_remove("LIBELLUS_DISABLE")
+        .env_remove("LIBELLUS_AGENT")
+        .env_remove("SWARMNOTES_DIR")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::null());
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let mut child = cmd.spawn().unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let data = input.to_vec();
     let writer = std::thread::spawn(move || {

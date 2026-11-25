@@ -105,6 +105,23 @@ pub static TOOLS: &[Tool] = &[
         ],
         run: spend,
     },
+    Tool {
+        name: "libellus_ledger",
+        group: "ledger",
+        description: "Totals of tokens and cost, for one agent or every agent. Optional task and step filters. A damaged ledger is an error and is not repaired.",
+        params: &[
+            Param {
+                name: "agent",
+                kind: Kind::Str,
+                required: false,
+                doc: "Agent to sum. Omit to sum every agent in the store.",
+                choices: &[],
+            },
+            Param { name: "task", kind: Kind::Str, required: false, doc: "Only this task slug.", choices: &[] },
+            Param { name: "step", kind: Kind::Str, required: false, doc: "Only this step slug.", choices: &[] },
+        ],
+        run: ledger_report,
+    },
 ];
 
 fn note_add(a: &Args) -> Result<Value, String> {
@@ -414,4 +431,77 @@ fn spend(a: &Args) -> Result<Value, String> {
         ("task_total", ledger::total(&mine)?.to_value()),
         ("agent_total", ledger::total(&all)?.to_value()),
     ]))
+}
+
+fn ledger_report(a: &Args) -> Result<Value, String> {
+    let store = Store::open()?;
+    let task = a.str("task");
+    let step = a.str("step");
+    if let Some(name) = task {
+        if !fsx::valid_slug(name) {
+            return Err(format!(
+                "invalid task \"{}\": use a slug",
+                fsx::clip(name, 40)
+            ));
+        }
+    }
+    if let Some(name) = step {
+        if !fsx::valid_slug(name) {
+            return Err(format!(
+                "invalid step \"{}\": use a slug",
+                fsx::clip(name, 40)
+            ));
+        }
+    }
+    let agents = match a.str("agent") {
+        Some(name) => {
+            store.agent_dir(name)?;
+            vec![name.to_string()]
+        }
+        None => store.agents()?,
+    };
+    let mut entries = Vec::new();
+    for name in &agents {
+        let mut rows = ledger::read(&store, name)?;
+        if let Some(task) = task {
+            rows.retain(|e| e.task == task);
+        }
+        if let Some(step) = step {
+            rows.retain(|e| e.step.as_deref() == Some(step));
+        }
+        entries.extend(rows);
+    }
+    let totals = ledger::total(&entries)?;
+    let mut pairs = match totals.to_value() {
+        Value::Object(fields) => fields,
+        _ => Vec::new(),
+    };
+    pairs.insert(
+        0,
+        (
+            "agents".to_string(),
+            Value::Array(agents.iter().map(Value::str).collect()),
+        ),
+    );
+    if task.is_none() {
+        pairs.push((
+            "by_task".to_string(),
+            totals_map(&ledger::by_task(&entries)?),
+        ));
+    }
+    if step.is_none() {
+        pairs.push((
+            "by_step".to_string(),
+            totals_map(&ledger::by_step(&entries)?),
+        ));
+    }
+    Ok(Value::Object(pairs))
+}
+
+fn totals_map(rows: &[(String, ledger::Totals)]) -> Value {
+    Value::Object(
+        rows.iter()
+            .map(|(k, t)| (k.clone(), t.to_value()))
+            .collect(),
+    )
 }

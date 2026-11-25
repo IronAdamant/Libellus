@@ -241,9 +241,7 @@ fn call(server: &Server, params: Option<&Value>) -> Result<Value, (i64, String)>
     };
     let enabled = enabled(server);
     if !enabled.tools.iter().any(|t| t.name == name) {
-        return Ok(tool_result(Err(format!(
-            "tool {name} is switched off by the agent-tools block in AGENTS.md; change that line to use it"
-        ))));
+        return Ok(tool_result(Err(enabled.refusal(tool))));
     }
     let args = params.get("arguments").unwrap_or(&Value::Null);
     let outcome =
