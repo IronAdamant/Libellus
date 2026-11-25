@@ -65,9 +65,12 @@ libellus resolve --agent main --id does-retry-apply-to-post --outcome "No, GET o
 libellus get --agent main --id does-retry-apply-to-post
 libellus spend --agent main --task retry --tokens_in 100 --tokens_out 20 --cost_micro_usd 1000
 libellus ledger --agent main
-libellus archive --agent main
 libellus brief --agent main
+libellus archive --agent main
 ```
+
+`archive` starts a fresh ledger, so the brief after it shows no cost. Run it
+when a ledger has grown large, not as a routine step.
 
 The store is the nearest `.libellus/` walking up from the working directory,
 or `$LIBELLUS_DIR`.
@@ -75,7 +78,10 @@ or `$LIBELLUS_DIR`.
 ```
 .libellus/
   agents/main/notes/does-retry-apply-to-post.md
+  agents/main/seq                 the note counter
   agents/main/ledger.jsonl
+  agents/main/ledger.meta         totals cache, rebuilt from the ledger
+  agents/main/archive/            ledgers moved aside by archive
   agents/sub-2/...
 ```
 
@@ -170,7 +176,13 @@ These failure modes are covered by tests in `tests/`:
 - A damaged note or ledger is an error naming the file. It is never read as
   empty, never reset, and a damaged ledger is never appended to.
 - Ids and agent names are slugs. Paths that leave the store, and symlinks,
-  are refused. The same checks apply to a Relatum path on promote.
+  are refused, including a symlinked `.libellus`, `notes/` or `archive/`.
+  The same checks apply to a Relatum path on promote.
+- Resolve, promote, spend, archive and the note counter each hold a lock.
+  A lock left by a killed writer is taken over by exactly one writer, so two
+  notes never share a `seq` and a concurrent resolve is never lost.
+- A `ledger.meta` that is not a regular file (a fifo, for example) is not
+  read, so it cannot block `spend`.
 - Writes land whole through a temp file that is removed on failure. A new
   note is created with a hard link, so it cannot overwrite another. Resolve
   and promote update an existing note only by replacing that file.
