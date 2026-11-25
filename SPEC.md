@@ -2,7 +2,7 @@
 
 Libellus is a private notepad and number ledger per agent. The files are the
 product. The CLI and the MCP server are conveniences over them, and any agent
-that can read and write files can use the store without either. Libellus 1.1.0
+that can read and write files can use the store without either. Libellus 1.1.1
 reads and writes the same files as 1.0.0.
 
 ## 1. Layout

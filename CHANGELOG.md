@@ -1,8 +1,15 @@
 # Changelog
 
-## 1.1.0 (unreleased)
+## 1.1.1
 
-Not tagged. Same on-disk format as 1.0.0.
+No behaviour changes. Same on-disk format as 1.0.0.
+
+- The Windows release archive is now a real zip. The release job checks that
+  the archive starts with the PK signature and lists its entries before upload.
+
+## 1.1.0
+
+Same on-disk format as 1.0.0.
 
 - `libellus_ls` takes `offset` (default 0) and `before_id`. The reply adds
   `offset`, `returned`, `truncated`, `next_offset`, and `next_before_id`.
