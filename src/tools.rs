@@ -4,6 +4,7 @@ use crate::fsx;
 use crate::json::Value;
 use crate::ledger::{self, Entry};
 use crate::note::{self, Note};
+use crate::promote;
 use crate::store::Store;
 use crate::tool::{Args, Kind, Param, Tool};
 
@@ -88,6 +89,23 @@ pub static TOOLS: &[Tool] = &[
             Param { name: "max_items", kind: Kind::UInt, required: false, doc: "Most notes per section. Default 5.", choices: &[] },
         ],
         run: brief,
+    },
+    Tool {
+        name: "libellus_promote",
+        group: "core",
+        description: "Copy one of your notes into the Relatum store as a shared note, and record that id in promoted. An open question must be resolved first. Does not run Relatum, and does not create .swarmnotes/.",
+        params: &[
+            AGENT,
+            NOTE_ID,
+            Param {
+                name: "scope",
+                kind: Kind::Str,
+                required: true,
+                doc: "Relatum scope, such as net or _shared. The new id is the scope plus this note's id.",
+                choices: &[],
+            },
+        ],
+        run: promote_note,
     },
     Tool {
         name: "libellus_spend",
@@ -383,6 +401,14 @@ fn brief(a: &Args) -> Result<Value, String> {
         ),
         ("text", Value::String(text)),
     ]))
+}
+
+fn promote_note(a: &Args) -> Result<Value, String> {
+    promote::promote(
+        a.str("agent").unwrap_or_default(),
+        a.str("id").unwrap_or_default(),
+        a.str("scope").unwrap_or_default(),
+    )
 }
 
 fn spend(a: &Args) -> Result<Value, String> {

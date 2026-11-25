@@ -19,6 +19,7 @@ USAGE
   libellus resolve --agent A --id I --outcome TEXT
   libellus ls --agent A [--kind K] [--status S] [--limit N] [--bodies]
   libellus brief --agent A [--max_items N]       print the compaction brief as text
+  libellus promote --agent A --id I --scope SCOPE
   libellus spend --agent A --task T [--step S] [--model M] [--tokens_in N] [--tokens_out N]
                  [--cost_micro_usd N] [--note TEXT]
   libellus ledger [--agent A] [--task T] [--step S]

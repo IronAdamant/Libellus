@@ -8,6 +8,7 @@ pub mod json;
 pub mod ledger;
 pub mod mcp;
 pub mod note;
+pub mod promote;
 pub mod store;
 pub mod tool;
 pub mod tools;
