@@ -758,7 +758,10 @@ fn the_html_page_is_escaped_self_contained_and_read_only() {
     assert!(page.contains("type=\"checkbox\" disabled checked"));
     assert!(page.contains("prefers-color-scheme:dark"));
     assert!(page.contains("name=\"viewport\""));
-    assert!(page.contains("1/2 done"), "per project progress: tasks under it, not itself");
+    assert!(
+        page.contains("1/2 done"),
+        "per project progress: tasks under it, not itself"
+    );
     assert!(
         page.contains("Archived projects") && page.contains("<details><summary><code>old</code>")
     );
