@@ -332,13 +332,14 @@ fn a_symlink_scope_is_refused_and_a_failed_update_leaves_one_relatum_file() {
     drop(guard);
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1));
+    // Promote takes the note lock first, so a read-only notes folder fails at
+    // once, before any Relatum file is written.
     assert!(
-        err.contains("Relatum note written") && err.contains("was not updated"),
+        err.contains("cannot lock") && err.contains("pick.md"),
         "{err}"
     );
-    assert!(err.contains("pick.md"), "{err}");
     let files = markdowns(&dir.join(".swarmnotes"));
-    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(files.is_empty(), "{files:?}");
     assert!(!private_has_promoted(&dir));
     assert!(strays(&dir).is_empty(), "{:?}", strays(&dir));
 }

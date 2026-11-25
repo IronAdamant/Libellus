@@ -33,6 +33,12 @@ impl Store {
                 if m.is_dir() {
                     return Store::at(cand);
                 }
+                // A symlink or file here is this folder's store gone wrong.
+                // Walking past it would write into a parent's store instead.
+                return Err(format!(
+                    "{} is not a folder (a symlink or file); refusing to use it or a store above it",
+                    cand.display()
+                ));
             }
             match cur.parent() {
                 Some(p) => cur = p,
@@ -97,7 +103,12 @@ impl Store {
     }
 
     pub fn notes_dir(&self, agent: &str) -> Result<PathBuf, String> {
-        Ok(self.agent_dir(agent)?.join("notes"))
+        fsx::join_child(&self.agent_dir(agent)?, &["notes"])
+    }
+
+    /// `agents/<agent>/archive`, refused when it is a symlink.
+    pub fn archive_dir(&self, agent: &str) -> Result<PathBuf, String> {
+        fsx::join_child(&self.agent_dir(agent)?, &["archive"])
     }
 
     pub fn ledger_path(&self, agent: &str) -> Result<PathBuf, String> {

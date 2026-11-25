@@ -32,10 +32,15 @@ fn reap_dir(dir: &Path, removed: &mut Vec<String>) {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let drop_it =
-            (name.starts_with('.') && name.ends_with(".lock") && fsx::lock_is_stale(&path))
-                || (name.starts_with('.') && name.contains(".tmp-") && temp_abandoned(&path));
-        if drop_it && fs::remove_file(&path).is_ok() {
+        let gone = if name.starts_with('.') && name.ends_with(".lock") {
+            fsx::break_stale_lock(&path)
+        } else {
+            name.starts_with('.')
+                && name.contains(".tmp-")
+                && temp_abandoned(&path)
+                && fs::remove_file(&path).is_ok()
+        };
+        if gone {
             removed.push(path.display().to_string());
         }
     }

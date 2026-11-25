@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.2.1
+
+Same store format as 1.2.0. Fixes from the fourth review.
+
+- Breaking a stale lock let several writers hold it at once: two contenders
+  could each judge the old lock stale, and the later one deleted the lock the
+  first had just taken. After a killed writer, notes could share a `seq` and
+  resolve, spend and archive lost their exclusion. Only the holder of a
+  `.break` guard removes a stale lock now, after judging it again. Each lock
+  line carries a token, and a holder removes its lock only while the file
+  still holds that line. `check` and `brief` reap through the same path.
+- Promote now holds the note lock. A resolve running beside it was lost, and
+  two promotes could both write a Relatum note.
+- `ls`, `brief` and `check` panicked when notes with and without `seq` had
+  `created` times out of order. Notes are merged instead of sorted with a
+  comparator that was not a total order.
+- A symlinked `notes/` or `archive/` folder was followed out of the store.
+  A symlinked `.libellus` was skipped and a parent store used instead. Both
+  are refused.
+- A FIFO or other non-regular `ledger.meta` blocked `spend` while it held the
+  ledger lock. Only a regular file is read as the cache.
+- A ledger line whose `step`, `model` or `note` was not a string was accepted.
+  It is now a corrupt line.
+- A repeated number or boolean flag was silently ignored. Any repeated flag
+  other than a list is a usage error.
+- A summary shaped `[...]` broke the promoted Relatum note. It gets a
+  trailing `.`.
+- Lock files are created 0600, like other files. On Unix, permission denied
+  on a lock is reported at once instead of waiting eight seconds and naming
+  another process.
+
 ## 1.2.0
 
 Same store for notes and ledger lines written by 1.0.0 and 1.1.2. New notes

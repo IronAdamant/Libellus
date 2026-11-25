@@ -66,7 +66,7 @@ pub fn run() -> Result<Value, String> {
 /// Archived ledgers are kept and are not part of the live cap. A damaged
 /// archive is still an error. The file-size cap applies only to the live ledger.
 fn check_archives(store: &Store, agent: &str) -> Result<Vec<String>, String> {
-    let dir = store.agent_dir(agent)?.join("archive");
+    let dir = store.archive_dir(agent)?;
     let rd = match std::fs::read_dir(&dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),

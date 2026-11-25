@@ -165,6 +165,9 @@ fn build_args(tool: &Tool, argv: &[String]) -> Result<Value, String> {
             .split('=')
             .next()
             .unwrap_or(&flag);
+        if !matches!(param.kind, Kind::StrList) && pairs.iter().any(|(k, _)| *k == flag) {
+            return Err(format!("--{shown} given twice"));
+        }
         match (param.kind, value) {
             (Kind::Bool, None) => {
                 pairs.push((flag, Value::Bool(true)));
@@ -187,9 +190,6 @@ fn build_args(tool: &Tool, argv: &[String]) -> Result<Value, String> {
                 _ => pairs.push((flag, Value::Array(vec![Value::str(v.as_str())]))),
             },
             (Kind::Str, Some(v)) => {
-                if pairs.iter().any(|(k, _)| *k == flag) {
-                    return Err(format!("--{shown} given twice"));
-                }
                 pairs.push((flag, Value::str(v.as_str())));
             }
         }

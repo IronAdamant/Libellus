@@ -386,10 +386,11 @@ fn note_ls(a: &Args) -> Result<Value, String> {
     let limit = a.uint("limit").unwrap_or(50) as usize;
     let offset = a.uint("offset").unwrap_or(0) as usize;
     if let Some(id) = a.str("before_id") {
-        let cursor = notes.iter().find(|n| n.id == id).cloned().ok_or_else(|| {
+        let at = notes.iter().position(|n| n.id == id).ok_or_else(|| {
             format!("before_id \"{id}\" is not in this list. Call libellus_ls without before_id.")
         })?;
-        notes.retain(|n| note::cmp_notes(n, &cursor).is_lt());
+        // The list is already oldest first, so older is everything before it.
+        notes.truncate(at);
     }
     // Newest notes are at the end. offset skips that many, then limit keeps
     // the newest of what remains. offset 0 with no before_id is the 1.0.0 page.

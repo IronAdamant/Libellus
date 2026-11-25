@@ -135,6 +135,11 @@ fn totals_value(totals: &Totals) -> Value {
 }
 
 fn load(path: &Path) -> Option<Cache> {
+    // A FIFO, device or symlink is not a cache. Reading a FIFO would block
+    // while the ledger lock is held.
+    if !matches!(fsx::file_kind(path), Ok(fsx::FileKind::Regular { .. })) {
+        return None;
+    }
     let text = fsx::read_strict(path).ok()?;
     let value = json::parse(&text).ok()?;
     let totals = totals_of(&value)?;

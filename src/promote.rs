@@ -15,6 +15,14 @@ use std::path::{Component, Path, PathBuf};
 
 pub fn promote(agent: &str, id: &str, scope: &str) -> Result<Value, String> {
     let store = Store::open()?;
+    let note_path = note::note_path(&store, agent, id)?;
+    // The same lock as resolve, held across the read, the Relatum write and
+    // the rewrite, so a concurrent resolve or second promote cannot be lost.
+    let _lock = if note_path.parent().is_some_and(|parent| parent.is_dir()) {
+        Some(fsx::Lock::acquire(&note_path)?)
+    } else {
+        None
+    };
     let mut note = note::load_one(&store, agent, id)?;
     if let Some(existing) = &note.promoted {
         return Err(format!("note \"{id}\" is already promoted as {existing}"));
@@ -24,7 +32,6 @@ pub fn promote(agent: &str, id: &str, scope: &str) -> Result<Value, String> {
     let base = id_segments(scope, id)?;
     let (rel_id, rel_path) = write_relatum(&root, &base, &note, agent, kind)?;
     note.promoted = Some(rel_id.clone());
-    let note_path = note::note_path(&store, agent, id)?;
     if let Err(e) = fsx::write_atomic(&note_path, note.render().as_bytes(), true) {
         return Err(format!(
             "Relatum note written at {} but the Libellus note at {} was not updated ({e}). promoted is still unset. Remove the Relatum file before retrying, or the retry will choose a new id.",
@@ -214,11 +221,22 @@ fn ensure_dir(dir: &Path) -> Result<(), String> {
     }
 }
 
+/// Relatum reads a value shaped `[...]` as a list, which would leave the note
+/// with no summary. Such a summary gets a trailing `.` so it stays a string.
+fn relatum_summary(summary: &str) -> String {
+    let t = summary.trim();
+    if t.starts_with('[') && t.ends_with(']') {
+        format!("{t}.")
+    } else {
+        summary.to_string()
+    }
+}
+
 fn render_relatum(note: &Note, author: &str, kind: &str) -> String {
     let mut s = String::from("---\n");
     s.push_str(&format!(
         "kind: {kind}\nsummary: {}\nauthor: {author}\nupdated: {}\n",
-        note.summary,
+        relatum_summary(&note.summary),
         fsx::today()
     ));
     if !note.tags.is_empty() {

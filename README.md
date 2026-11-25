@@ -139,7 +139,7 @@ libellus hook --agent main --host generic
 
 ## Tool groups
 
-`core` is always on. `ledger` (`libellus_spend`, `libellus_ledger`) can be
+`core` is always on. `ledger` (`libellus_spend`, `libellus_ledger`, `libellus_archive`) can be
 switched off. The server rereads the choice on every request.
 
 Add one line to the `agent-tools` block in the project's AGENTS.md:

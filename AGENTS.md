@@ -51,9 +51,11 @@ cargo build --release --locked
 - `src/promote.rs` the Relatum promote step. `src/hook.rs` the hook snippet.
 - `src/cli.rs` the command line. `LIBELLUS_AGENT` fills a required agent.
 - `src/check.rs` the store check used by the CLI and `libellus_check`.
-- `fsx::Lock` is the create-exclusive lock around resolve and spend.
+- `fsx::Lock` is the create-exclusive lock around resolve, promote, spend,
+  archive, ledger reads and the seq counter. Stale locks are removed only by
+  `fsx::break_stale_lock`.
 - `examples/perf.rs` release timings. `docs/perf/` the recorded numbers.
 - `tests/hostile_input.rs`, `tests/store_integrity.rs`, `tests/cli_and_groups.rs`,
   `tests/note_life.rs`, `tests/ledger_groups.rs`, `tests/promote.rs`,
-  `tests/hook.rs`, `tests/agent_ux.rs`: the failure modes the design avoids.
+  `tests/hook.rs`, `tests/agent_ux.rs`, `tests/review4.rs`: the failure modes the design avoids.
   Keep them passing.

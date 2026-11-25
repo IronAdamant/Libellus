@@ -104,6 +104,13 @@ impl Entry {
         }
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(String::from);
         let need = |k: &str| s(k).ok_or_else(|| format!("missing or non-string \"{k}\""));
+        let opt = |k: &str| match v.get(k) {
+            None => Ok(None),
+            Some(x) => x
+                .as_str()
+                .map(|t| Some(t.to_string()))
+                .ok_or_else(|| format!("\"{k}\" must be a string")),
+        };
         let n = |k: &str| match v.get(k) {
             Some(x) => x
                 .as_u64()
@@ -114,12 +121,12 @@ impl Entry {
             ts: need("ts")?,
             agent: need("agent")?,
             task: need("task")?,
-            step: s("step"),
-            model: s("model"),
+            step: opt("step")?,
+            model: opt("model")?,
             tokens_in: n("tokens_in")?,
             tokens_out: n("tokens_out")?,
             cost_micro_usd: n("cost_micro_usd")?,
-            note: s("note"),
+            note: opt("note")?,
         })
     }
 

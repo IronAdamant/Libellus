@@ -330,6 +330,10 @@ pub fn join_child(base: &Path, segments: &[&str]) -> Result<PathBuf, String> {
 /// deletes the file.
 pub struct Lock {
     path: PathBuf,
+    /// The line this holder wrote. Drop unlinks the name only while it still
+    /// holds this line, so a lock that was broken and taken by another writer
+    /// is left alone.
+    text: String,
     /// Held open so Windows reports a sharing violation instead of letting a
     /// second creator slip through. Closed before the file is removed.
     file: Option<fs::File>,
@@ -348,16 +352,17 @@ impl Lock {
         loop {
             match open_lock(&path) {
                 Ok(mut file) => {
-                    let _ = writeln!(file, "pid {}", std::process::id());
+                    let text = format!("pid {} {}\n", std::process::id(), lock_token());
+                    let _ = file.write_all(text.as_bytes());
                     let _ = file.sync_all();
                     return Ok(Lock {
                         path,
+                        text,
                         file: Some(file),
                     });
                 }
                 Err(e) if lock_contended(&e, &path) => {
-                    if lock_is_stale(&path) {
-                        let _ = fs::remove_file(&path);
+                    if break_stale_lock(&path) {
                         continue;
                     }
                     if start.elapsed() >= LOCK_WAIT {
@@ -378,14 +383,70 @@ impl Drop for Lock {
     fn drop(&mut self) {
         // Unlink once, while this handle is still open, then close. A second
         // unlink after the close can delete a lock the next writer just created.
-        let _ = fs::remove_file(&self.path);
+        // A name that no longer holds this writer's line belongs to someone else.
+        if fs::read_to_string(&self.path).is_ok_and(|t| t == self.text) {
+            let _ = fs::remove_file(&self.path);
+        }
         self.file.take();
     }
+}
+
+/// A token unique to one acquire in this process, so two holders never write
+/// the same lock line.
+fn lock_token() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{nanos:x}-{n}")
+}
+
+/// How long the `.break` guard may stay before it is taken as abandoned.
+/// Breaking takes microseconds, so only a writer killed mid-break leaves one.
+const BREAK_STALE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Remove the lock at `path` if it is stale, and say whether it was removed.
+/// Only the holder of the `.break` guard beside it removes, and it judges the
+/// lock again while holding the guard. Nobody can create the lock name while
+/// the stale file is there, so the file judged stale is the file removed: a
+/// lock created after another contender's check is never deleted.
+pub(crate) fn break_stale_lock(path: &Path) -> bool {
+    if !lock_is_stale(path) {
+        return false;
+    }
+    let mut guard = path.as_os_str().to_owned();
+    guard.push(".break");
+    let guard = PathBuf::from(guard);
+    let held = match open_lock(&guard) {
+        Ok(file) => file,
+        Err(_) => {
+            let old = fs::symlink_metadata(&guard)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > BREAK_STALE);
+            if old {
+                let _ = fs::remove_file(&guard);
+            }
+            return false;
+        }
+    };
+    let removed = lock_is_stale(path) && fs::remove_file(path).is_ok();
+    drop(held);
+    let _ = fs::remove_file(&guard);
+    removed
 }
 
 fn open_lock(path: &Path) -> std::io::Result<fs::File> {
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
@@ -402,9 +463,14 @@ fn lock_contended(err: &std::io::Error, _path: &Path) -> bool {
     // Windows returns access denied (5) or sharing violation (32) for a race
     // on CreateFile, sometimes after the other process has already deleted
     // the name. Treat those as "try again" until the wait expires.
-    err.kind() == std::io::ErrorKind::AlreadyExists
-        || err.kind() == std::io::ErrorKind::PermissionDenied
-        || matches!(err.raw_os_error(), Some(5) | Some(32))
+    if err.kind() == std::io::ErrorKind::AlreadyExists {
+        return true;
+    }
+    // On Unix, permission denied is a real error (a read-only folder), not a
+    // race. Waiting on it would blame another process after eight seconds.
+    cfg!(windows)
+        && (err.kind() == std::io::ErrorKind::PermissionDenied
+            || matches!(err.raw_os_error(), Some(5) | Some(32)))
 }
 
 fn lock_path(subject: &Path) -> Result<PathBuf, String> {
@@ -591,6 +657,57 @@ mod tests {
         for handle in handles {
             handle.join().unwrap();
         }
+    }
+
+    #[test]
+    fn racing_past_a_dead_lock_leaves_one_holder() {
+        let d = scratch("lock-dead");
+        let subject = d.join("ledger.jsonl");
+        fs::write(&subject, b"\n").unwrap();
+        use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+        for _ in 0..12 {
+            fs::write(d.join(".ledger.jsonl.lock"), "pid 999999\n").unwrap();
+            let inside = std::sync::Arc::new(AtomicU64::new(0));
+            let most = std::sync::Arc::new(AtomicU64::new(0));
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(6));
+            let handles: Vec<_> = (0..6)
+                .map(|_| {
+                    let (subject, inside, most, gate) =
+                        (subject.clone(), inside.clone(), most.clone(), gate.clone());
+                    std::thread::spawn(move || {
+                        gate.wait();
+                        let _lock = Lock::acquire(&subject).unwrap();
+                        most.fetch_max(inside.fetch_add(1, SeqCst) + 1, SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(30));
+                        inside.fetch_sub(1, SeqCst);
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            assert_eq!(
+                most.load(SeqCst),
+                1,
+                "two holders after a stale lock was broken"
+            );
+            assert!(!d.join(".ledger.jsonl.lock").exists());
+            assert!(!d.join(".ledger.jsonl.lock.break").exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch("lock-mode");
+        let subject = d.join("ledger.jsonl");
+        let _lock = Lock::acquire(&subject).unwrap();
+        let mode = fs::metadata(d.join(".ledger.jsonl.lock"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

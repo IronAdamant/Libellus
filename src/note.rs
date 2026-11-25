@@ -308,21 +308,35 @@ impl Note {
     }
 }
 
-/// Oldest first. Notes with `seq` order by that number. Notes without it
-/// (written before 1.2.0) order by `created`, then id. Inside one second, a
-/// note that has `seq` is newer than one that does not.
-pub fn cmp_notes(a: &Note, b: &Note) -> Ordering {
-    match (a.seq, b.seq) {
-        (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.id.cmp(&b.id)),
-        (None, None) => a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)),
-        (Some(_), None) => match a.created.cmp(&b.created) {
-            Ordering::Equal => Ordering::Greater,
-            other => other,
-        },
-        (None, Some(_)) => match a.created.cmp(&b.created) {
-            Ordering::Equal => Ordering::Less,
-            other => other,
-        },
+/// Oldest first. Notes with `seq` keep the order of that number. Notes
+/// without it (written before 1.2.0) order by `created`, then id. The two runs
+/// are merged by `created`; inside one second, a note that has `seq` is newer
+/// than one that does not.
+///
+/// This is a merge, not a comparator: seq order and `created` order can
+/// disagree (a clock step, a hand-written note), and a comparator mixing them
+/// is not a total order, which makes the standard sort panic.
+pub fn sort_notes(notes: &mut Vec<Note>) {
+    let (mut with_seq, mut legacy): (Vec<Note>, Vec<Note>) = std::mem::take(notes)
+        .into_iter()
+        .partition(|n| n.seq.is_some());
+    with_seq.sort_by(|a, b| a.seq.cmp(&b.seq).then_with(|| a.id.cmp(&b.id)));
+    legacy.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
+    let mut seq_iter = with_seq.into_iter().peekable();
+    let mut legacy_iter = legacy.into_iter().peekable();
+    loop {
+        let take_legacy = match (seq_iter.peek(), legacy_iter.peek()) {
+            (Some(s), Some(l)) => l.created.cmp(&s.created) != Ordering::Greater,
+            (None, Some(_)) => true,
+            (Some(_), None) => false,
+            (None, None) => break,
+        };
+        let next = if take_legacy {
+            legacy_iter.next()
+        } else {
+            seq_iter.next()
+        };
+        notes.extend(next);
     }
 }
 
@@ -347,7 +361,7 @@ pub fn load_all(store: &Store, agent: &str) -> Result<Loaded, String> {
     } else {
         read_notes_parallel(&ids)?
     };
-    notes.sort_by(cmp_notes);
+    sort_notes(&mut notes);
     notes.retain(|note| {
         if note.agent == agent {
             true
@@ -585,7 +599,7 @@ mod tests {
         legacy.id = "mmm-legacy".into();
         legacy.seq = None;
         let mut notes = vec![newer.clone(), legacy.clone(), older.clone()];
-        notes.sort_by(cmp_notes);
+        sort_notes(&mut notes);
         assert_eq!(notes[0].id, "mmm-legacy");
         assert_eq!(notes[1].id, "zzz-older");
         assert_eq!(notes[2].id, "aaa-newer");

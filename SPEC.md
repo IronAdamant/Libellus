@@ -21,7 +21,9 @@ binary rejects that key.
 - `<agent>` and every id segment are slugs: `[a-z0-9][a-z0-9-]*`, at most 64
   bytes. An id has at most two segments (`retry/post-question`).
 - On Unix the folders are created mode 0700 and files 0600.
-- A path component that is a symlink is refused, including `ledger.jsonl`.
+- A path component that is a symlink is refused, including `ledger.jsonl`,
+  `notes/` and `archive/`. A `.libellus` found while walking up that is a
+  symlink or a file is an error; the walk does not carry on to a parent store.
   A regular file that is not a note in the notes folder is an error. A fifo
   or other non-regular file is not opened: `ls` and `brief` skip it and warn,
   and `check` reports it.
@@ -70,9 +72,11 @@ does not match the folder is skipped by `ls` and `brief` with a warning, and
 or two slugs, and anything in the notes folder that is not a regular file
 (a fifo, for example), is skipped the same way. A symlink is still an error.
 
-Notes are ordered by `seq` when they have one. Notes without `seq` are
-ordered by `created`, then by id. Inside one second, a note with `seq` is
-newer than a note without it. `seq` comes from `agents/<agent>/seq`. A missing
+Notes with `seq` keep the order of that number. Notes without `seq` are
+ordered by `created`, then by id. The two runs are merged by `created`:
+inside one second, a note with `seq` is newer than a note without it. A
+`seq` order that disagrees with `created` (a clock step, a hand-written note)
+keeps the `seq` order and does not fail. `seq` comes from `agents/<agent>/seq`. A missing
 counter starts at the highest `seq` already stored, or 0. A damaged counter
 is an error and is not reset. Resolve and promote leave `seq` unchanged.
 
@@ -105,7 +109,8 @@ One JSON object per line, appended, never rewritten:
 {"ts":"2026-11-25T02:07:00Z","agent":"main","task":"retry","step":"plan","model":"x","tokens_in":1200,"tokens_out":300,"cost_micro_usd":15000,"note":"first pass"}
 ```
 
-`step`, `model` and `note` are optional. The three numbers are whole numbers
+`step`, `model` and `note` are optional, and are strings when present; any
+other type is a corrupt line. The three numbers are whole numbers
 (unsigned, up to 64 bits); `cost_micro_usd` is millionths of a US dollar. Sums use
 checked arithmetic. A spend checks the new total before it appends, and does
 not append when the total would overflow. Under the lock it uses
@@ -185,7 +190,12 @@ The file is markdown with Relatum frontmatter (`kind`, `summary`, `author`,
 file is never replaced. `author` is the agent name. The body is the Libellus
 body, or the summary when the body is empty. Evidence pointers are appended
 as `Evidence: ...` because Relatum has no evidence field. If that id is taken,
-the last segment gains a suffix `-2`, `-3`, and so on.
+the last segment gains a suffix `-2`, `-3`, and so on. Relatum reads a value
+shaped `[...]` as a list, so a summary that starts with `[` and ends with `]`
+is written with a trailing `.` to stay a string.
+
+Promote holds the same note lock as resolve, from reading the note to
+rewriting it, so a concurrent resolve or second promote is never lost.
 
 Then `promoted` on the Libellus note is set to that Relatum id, atomically.
 If the Relatum write succeeded and this update fails, the error names both
@@ -237,7 +247,11 @@ types, missing required arguments and values outside an `enum` are errors with
   lock could not be removed. `check` first deletes stale locks and temp files
   whose writer is gone. A lock with no finished pid line is stale after one
   second. A finished line that names a dead process is stale at once. A fresh
-  lock that is not a pid line is left in place. The success JSON lists
+  lock that is not a pid line is left in place. Only the holder of the
+  `.<name>.lock.break` guard removes a stale lock, and it judges the lock
+  again while holding the guard, so a lock taken a moment later is never
+  removed. A holder deletes its lock only while the file still holds the line
+  it wrote. The success JSON lists
   `removed`.
 - `libellus_promote` `{agent, id, scope}` returns `{id, promoted, relatum_kind, path}`.
 - `libellus_spend` `{agent, task, step?, model?, tokens_in?, tokens_out?,
@@ -251,7 +265,7 @@ types, missing required arguments and values outside an `enum` are errors with
 caller omitted. An explicit `agent` wins.
 
 Groups: `core` (note, get, resolve, ls, brief, promote, check) is always on; `ledger`
-(spend, ledger) can be switched off. A hidden tool's call returns `isError`.
+(spend, ledger, archive) can be switched off. A hidden tool's call returns `isError`.
 
 The choice is one line in the project's AGENTS.md `agent-tools` block:
 

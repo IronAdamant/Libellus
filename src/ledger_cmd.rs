@@ -87,7 +87,7 @@ pub fn archive(agent: &str) -> Result<Value, String> {
             ));
         }
     };
-    let archive_dir = store.agent_dir(agent)?.join("archive");
+    let archive_dir = store.archive_dir(agent)?;
     fsx::make_private_dir(&archive_dir)?;
     let stamp: String = fsx::now_iso()
         .chars()
