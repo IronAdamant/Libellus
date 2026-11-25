@@ -429,9 +429,11 @@ fn check_reports_a_stale_lock_and_how_to_clear_it() {
     drop(file);
     let checked = cli(&dir, &["check"]);
     let err = String::from_utf8_lossy(&checked.stderr);
-    assert!(!checked.status.success(), "{err}");
+    let body = String::from_utf8(checked.stdout).unwrap();
+    assert!(checked.status.success(), "{err} {body}");
     assert!(
-        err.contains("stale lock") && err.contains("Remove"),
-        "{err}"
+        body.contains("removed") && body.contains(".ledger.jsonl.lock"),
+        "{body}"
     );
+    assert!(!lock.exists(), "stale lock should have been removed");
 }

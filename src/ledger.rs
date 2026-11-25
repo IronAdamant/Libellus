@@ -9,7 +9,9 @@
 
 use crate::fsx;
 use crate::json::{self, Value};
+use crate::ledger_meta;
 use crate::store::Store;
+use std::collections::HashMap;
 use std::io::Write;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,7 +36,7 @@ pub struct Totals {
 }
 
 impl Totals {
-    fn add(&mut self, e: &Entry) -> Result<(), String> {
+    pub(crate) fn add(&mut self, e: &Entry) -> Result<(), String> {
         let over = || "ledger totals overflowed a 64-bit number".to_string();
         let tokens_in = self.tokens_in.checked_add(e.tokens_in).ok_or_else(over)?;
         let tokens_out = self.tokens_out.checked_add(e.tokens_out).ok_or_else(over)?;
@@ -161,18 +163,139 @@ pub const MAX_LEDGER_LINE: usize = 64 * 1024;
 
 /// Append one entry as a single `write` of a whole line.
 ///
-/// The ledger is locked for the one read, the overflow check, and the write.
-/// The new totals are checked before any byte is appended. On overflow, or
-/// when the file ends in a torn line, the file is left unchanged. The
-/// returned entries are that one read plus this entry, so the count is taken
-/// under the lock.
-pub fn append(store: &Store, entry: &Entry) -> Result<Vec<Entry>, String> {
+/// The ledger is locked for the read, the overflow check, and the write.
+/// The new totals are checked before any byte is appended. A spend that
+/// would pass the 32 MiB cap is refused with the file unchanged. On a failed
+/// write, a partial line from this call is truncated back off. When
+/// `ledger.meta` still matches the file length and the last line, the totals
+/// are taken from that cache instead of parsing the file again.
+pub fn append(store: &Store, entry: &Entry) -> Result<Recorded, String> {
     let path = store.ledger_path(&entry.agent)?;
     if let Some(dir) = path.parent() {
         fsx::make_private_dir(dir)?;
     }
     let _lock = fsx::Lock::acquire(&path)?;
     fsx::refuse_special(&path)?;
+    let mut line = entry.to_line();
+    line.push('\n');
+    if line.len() > MAX_LEDGER_LINE {
+        return Err(format!(
+            "not appended: this line is {} bytes, over the {MAX_LEDGER_LINE} byte line cap. The file was not changed.",
+            line.len()
+        ));
+    }
+    let prev_len = match fsx::file_kind(&path)? {
+        fsx::FileKind::Missing => 0,
+        fsx::FileKind::Regular { len } => len,
+        fsx::FileKind::Symlink => {
+            return Err(format!(
+                "{} is a symlink; refusing to follow it",
+                path.display()
+            ))
+        }
+        fsx::FileKind::Other => {
+            return Err(format!(
+                "{} is not a regular file; refusing to open it",
+                path.display()
+            ))
+        }
+    };
+    if prev_len > MAX_LEDGER_BYTES || prev_len + line.len() as u64 > MAX_LEDGER_BYTES {
+        return Err(format!(
+            "not appended: {} is {prev_len} bytes and this line is {} bytes, which would pass the {MAX_LEDGER_BYTES} byte cap. The file was not changed. Archive it with libellus archive --agent {}.",
+            path.display(),
+            line.len(),
+            entry.agent
+        ));
+    }
+    let (agent_totals, task_totals) = match ledger_meta::matching(&path, prev_len)? {
+        Some(cache) => {
+            let mut agent_totals = cache.totals.clone();
+            if agent_totals.add(entry).is_err() {
+                return Err(overflow_msg(&path));
+            }
+            let (task_totals, tasks, tasks_complete) = if cache.tasks_complete {
+                let mut task_totals = cache.tasks.get(&entry.task).cloned().unwrap_or_default();
+                if task_totals.add(entry).is_err() {
+                    return Err(overflow_msg(&path));
+                }
+                let mut tasks = cache.tasks;
+                tasks.insert(entry.task.clone(), task_totals.clone());
+                let complete = tasks.len() <= ledger_meta::MAX_CACHED_TASKS;
+                if !complete {
+                    tasks.clear();
+                }
+                (task_totals, tasks, complete)
+            } else {
+                let mut task_totals = sum_task(&path, &entry.agent, &entry.task)?;
+                if task_totals.add(entry).is_err() {
+                    return Err(overflow_msg(&path));
+                }
+                (task_totals, HashMap::new(), false)
+            };
+            write_line(&path, prev_len, line.as_bytes())?;
+            let saved = ledger_meta::Cache {
+                len: prev_len + line.len() as u64,
+                totals: agent_totals.clone(),
+                tasks,
+                tasks_complete,
+                last_hash: ledger_meta::hash_bytes(line.as_bytes()),
+            };
+            let _ = ledger_meta::save(&path, &saved);
+            (agent_totals, task_totals)
+        }
+        None => append_from_file(store, &path, entry, prev_len, &line)?,
+    };
+    Ok(Recorded {
+        agent: agent_totals,
+        task: task_totals,
+    })
+}
+
+/// Totals for one task, without keeping every entry. Used when the cache
+/// does not hold the task map.
+fn sum_task(path: &std::path::Path, agent: &str, task: &str) -> Result<Totals, String> {
+    let text = fsx::read_strict(path)?;
+    if !text.is_empty() && !text.ends_with('\n') {
+        return Err(format!(
+            "not appended: {} ends in a partial line. Finish that line with a newline, or delete it. The file was not changed.",
+            path.display()
+        ));
+    }
+    let mut totals = Totals::default();
+    for (i, line) in text.lines().enumerate() {
+        if line.len() > MAX_LEDGER_LINE {
+            return Err(format!(
+                "ledger {} line {} is {} bytes, over the {MAX_LEDGER_LINE} byte line cap",
+                path.display(),
+                i + 1,
+                line.len()
+            ));
+        }
+        let row = Entry::from_line(line)
+            .map_err(|e| format!("corrupt ledger {} line {}: {e}", path.display(), i + 1))?;
+        if row.rejected(agent).is_some() || row.task != task {
+            continue;
+        }
+        totals.add(&row)?;
+    }
+    Ok(totals)
+}
+
+fn overflow_msg(path: &std::path::Path) -> String {
+    format!(
+        "not appended: adding this entry to {} would overflow a 64-bit total. The file was not changed.",
+        path.display()
+    )
+}
+
+fn append_from_file(
+    store: &Store,
+    path: &std::path::Path,
+    entry: &Entry,
+    prev_len: u64,
+    line: &str,
+) -> Result<(Totals, Totals), String> {
     let existing = read(store, &entry.agent)?;
     if existing.torn {
         return Err(format!(
@@ -181,30 +304,83 @@ pub fn append(store: &Store, entry: &Entry) -> Result<Vec<Entry>, String> {
         ));
     }
     let (so_far, bad) = sum_prefix(&existing.entries);
-    if let Some(line) = bad {
+    if let Some(n) = bad {
         return Err(format!(
-            "not appended: {} line {line}: ledger totals overflowed a 64-bit number. The file was not changed.",
+            "not appended: {} line {n}: ledger totals overflowed a 64-bit number. The file was not changed.",
             path.display()
         ));
     }
-    let mut totals = so_far;
-    if totals.add(entry).is_err() {
-        return Err(format!(
-            "not appended: adding this entry to {} would overflow a 64-bit total. The file was not changed.",
-            path.display()
-        ));
+    let mut agent_totals = so_far;
+    if agent_totals.add(entry).is_err() {
+        return Err(overflow_msg(path));
     }
-    let mut line = entry.to_line();
-    line.push('\n');
-    let mut f = fsx::open_append_private(&path)?;
-    f.write_all(line.as_bytes())
-        .map_err(|e| format!("cannot append to {}: {e}", path.display()))?;
-    f.sync_all()
-        .map_err(|e| format!("cannot sync {}: {e}", path.display()))?;
-    let mut entries = existing.entries;
-    entries.push(entry.clone());
-    Ok(entries)
+    let mut task_totals = Totals::default();
+    for old in existing.entries.iter().filter(|e| e.task == entry.task) {
+        task_totals.add(old)?;
+    }
+    task_totals.add(entry)?;
+    write_line(path, prev_len, line.as_bytes())?;
+    let mut tasks = task_map(&existing.entries)?;
+    tasks.insert(entry.task.clone(), task_totals.clone());
+    let tasks_complete = tasks.len() <= ledger_meta::MAX_CACHED_TASKS;
+    if !tasks_complete {
+        tasks.clear();
+    }
+    let saved = ledger_meta::Cache {
+        len: prev_len + line.len() as u64,
+        totals: agent_totals.clone(),
+        tasks,
+        tasks_complete,
+        last_hash: ledger_meta::hash_bytes(line.as_bytes()),
+    };
+    let _ = ledger_meta::save(path, &saved);
+    Ok((agent_totals, task_totals))
 }
+
+fn task_map(entries: &[Entry]) -> Result<HashMap<String, Totals>, String> {
+    let mut tasks: HashMap<String, Totals> = HashMap::new();
+    for entry in entries {
+        let slot = tasks.entry(entry.task.clone()).or_default();
+        slot.add(entry)?;
+    }
+    Ok(tasks)
+}
+
+/// Write `bytes` at the end of `path`. On a failed write, truncate back to
+/// `prev_len` so this call does not leave its own torn line.
+fn write_line(path: &std::path::Path, prev_len: u64, bytes: &[u8]) -> Result<(), String> {
+    ignore_file_size_signal();
+    let mut file = fsx::open_append_private(path)?;
+    if let Err(e) = file.write_all(bytes).and_then(|_| file.sync_all()) {
+        let rolled = file.set_len(prev_len).and_then(|_| file.sync_all());
+        let extra = match rolled {
+            Ok(()) => " The partial line was removed.",
+            Err(re) => {
+                return Err(format!(
+                    "cannot append to {}: {e}. The partial line could not be removed: {re}",
+                    path.display()
+                ));
+            }
+        };
+        return Err(format!("cannot append to {}: {e}.{extra}", path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ignore_file_size_signal() {
+    // SIGXFSZ is 25 on Linux and macOS. Ignoring it turns a file-size limit
+    // into EFBIG, which `write_line` can roll back, instead of killing us.
+    extern "C" {
+        fn signal(sig: i32, handler: *const ()) -> *const ();
+    }
+    unsafe {
+        signal(25, 1usize as *const ());
+    }
+}
+
+#[cfg(not(unix))]
+fn ignore_file_size_signal() {}
 
 /// A ledger read, summed. `overflow_line` is the first entry that does not fit.
 pub struct Summed {
@@ -212,6 +388,25 @@ pub struct Summed {
     pub totals: Totals,
     pub overflow_line: Option<usize>,
     pub warnings: Vec<String>,
+    pub torn: bool,
+}
+
+impl Summed {
+    fn empty() -> Summed {
+        Summed {
+            entries: Vec::new(),
+            totals: Totals::default(),
+            overflow_line: None,
+            warnings: Vec::new(),
+            torn: false,
+        }
+    }
+}
+
+/// What `append` recorded. Totals include the line just written.
+pub struct Recorded {
+    pub agent: Totals,
+    pub task: Totals,
 }
 
 /// Read a ledger and sum what fits. A corrupt line is still a hard error.
@@ -229,12 +424,36 @@ pub fn read_summed(store: &Store, agent: &str) -> Result<Summed, String> {
         totals,
         overflow_line,
         warnings: read.warnings,
+        torn: read.torn,
     })
+}
+
+/// Read one agent's ledger under its lock and refresh `ledger.meta` when the
+/// file is a clean sum. Brief and ledger use this so the next spend can skip
+/// the parse. A hard read error is returned as-is; callers that must stay up
+/// (the brief) turn it into `ledger_error`.
+pub fn load_report(store: &Store, agent: &str) -> Result<Summed, String> {
+    let path = store.ledger_path(agent)?;
+    if matches!(fsx::file_kind(&path)?, fsx::FileKind::Missing) {
+        return Ok(Summed::empty());
+    }
+    let _lock = fsx::Lock::acquire(&path)?;
+    let summed = read_summed(store, agent)?;
+    if summed.overflow_line.is_none() && !summed.torn {
+        let _ = ledger_meta::store_entries(&path, &summed.entries);
+    }
+    Ok(summed)
 }
 
 pub fn read(store: &Store, agent: &str) -> Result<Read, String> {
     let path = store.ledger_path(agent)?;
-    let text = match fsx::file_kind(&path)? {
+    read_at(&path, agent, true)
+}
+
+/// Read a ledger file. `enforce_cap` is false for an archived file, which is
+/// allowed to be larger than the live ledger.
+pub fn read_at(path: &std::path::Path, agent: &str, enforce_cap: bool) -> Result<Read, String> {
+    let text = match fsx::file_kind(path)? {
         fsx::FileKind::Missing => {
             return Ok(Read {
                 entries: Vec::new(),
@@ -254,15 +473,15 @@ pub fn read(store: &Store, agent: &str) -> Result<Read, String> {
                 path.display()
             ))
         }
-        fsx::FileKind::Regular { len } if len > MAX_LEDGER_BYTES => {
+        fsx::FileKind::Regular { len } if enforce_cap && len > MAX_LEDGER_BYTES => {
             return Err(format!(
                 "ledger {} is {len} bytes, over the {MAX_LEDGER_BYTES} byte cap",
                 path.display()
             ))
         }
-        fsx::FileKind::Regular { .. } => fsx::read_strict(&path)?,
+        fsx::FileKind::Regular { .. } => fsx::read_strict(path)?,
     };
-    parse_text(&path, agent, &text)
+    parse_text(path, agent, &text)
 }
 
 fn parse_text(path: &std::path::Path, agent: &str, text: &str) -> Result<Read, String> {
@@ -331,32 +550,58 @@ pub fn sum_prefix(entries: &[Entry]) -> (Totals, Option<usize>) {
 
 /// Totals grouped by task, sorted by task name.
 pub fn by_task(entries: &[Entry]) -> Result<Vec<(String, Totals)>, String> {
-    grouped(entries, |e| e.task.clone())
+    Ok(finish_groups(grouped(entries, |e| e.task.clone())?, false))
+}
+
+/// Task totals with the most recently written task first.
+pub fn by_task_recent(entries: &[Entry]) -> Result<Vec<(String, Totals)>, String> {
+    Ok(finish_groups(grouped(entries, |e| e.task.clone())?, true))
 }
 
 /// Totals grouped by step, sorted by step name. A missing step is `""`.
 pub fn by_step(entries: &[Entry]) -> Result<Vec<(String, Totals)>, String> {
-    grouped(entries, |e| e.step.clone().unwrap_or_default())
+    Ok(finish_groups(
+        grouped(entries, |e| e.step.clone().unwrap_or_default())?,
+        false,
+    ))
 }
 
-fn grouped(
-    entries: &[Entry],
-    key_of: impl Fn(&Entry) -> String,
-) -> Result<Vec<(String, Totals)>, String> {
-    let mut out: Vec<(String, Totals)> = Vec::new();
-    for e in entries {
-        let key = key_of(e);
-        match out.iter_mut().find(|(k, _)| *k == key) {
-            Some((_, t)) => t.add(e)?,
-            None => {
-                let mut t = Totals::default();
-                t.add(e)?;
-                out.push((key, t));
-            }
+struct Group {
+    key: String,
+    totals: Totals,
+    last: usize,
+}
+
+fn grouped(entries: &[Entry], key_of: impl Fn(&Entry) -> String) -> Result<Vec<Group>, String> {
+    let mut map: HashMap<String, Group> = HashMap::new();
+    for (i, entry) in entries.iter().enumerate() {
+        let key = key_of(entry);
+        if let Some(group) = map.get_mut(&key) {
+            group.totals.add(entry)?;
+            group.last = i;
+        } else {
+            let mut totals = Totals::default();
+            totals.add(entry)?;
+            map.insert(
+                key.clone(),
+                Group {
+                    key,
+                    totals,
+                    last: i,
+                },
+            );
         }
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(out)
+    Ok(map.into_values().collect())
+}
+
+fn finish_groups(mut rows: Vec<Group>, recent: bool) -> Vec<(String, Totals)> {
+    if recent {
+        rows.sort_by(|a, b| b.last.cmp(&a.last).then_with(|| a.key.cmp(&b.key)));
+    } else {
+        rows.sort_by(|a, b| a.key.cmp(&b.key));
+    }
+    rows.into_iter().map(|row| (row.key, row.totals)).collect()
 }
 
 #[cfg(test)]

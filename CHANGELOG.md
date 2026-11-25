@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.2.0
+
+Same store for notes and ledger lines written by 1.0.0 and 1.1.2. New notes
+add `seq`. A 1.1.2 binary rejects that key. New brief fields and the
+`supersede` argument are additive.
+
+- Recent decisions, questions, findings and dead ends are ordered by a
+  per-agent `seq`, not by id inside one second. The brief keeps the newest
+  `max_items` (default 5, at most 50). Open questions are capped too, newest
+  first. `text` is at most 8192 bytes and says when it was cut.
+- The brief includes the newest context note and recent findings. A decision
+  can be marked replaced with `supersede`, or with an outcome that starts
+  with `SUPERSEDED:` or `REVERSED:`. Replaced decisions are listed on their
+  own, with `(replaced)` in the text.
+- `spend` refuses before the ledger would pass 32 MiB. `brief` still returns
+  the notes when the ledger cannot be read, with `ledger_error` set. `ledger`,
+  `spend` and `check` still fail on a damaged or over-cap ledger.
+  `libellus archive` moves the file into `archive/` and starts a fresh ledger.
+  The old bytes are kept and are not part of later totals.
+- Task totals are grouped in one pass. The brief's `by_task` keeps the newest
+  tasks, not an alphabetical prefix, and says how many were left out.
+  `libellus_ledger` still returns every task.
+- A lock with no finished pid line is stale after one second. `check` removes
+  stale locks and temp files whose writer is gone. A failed `spend` write
+  truncates its own partial line.
+- `spend` keeps a totals cache in `ledger.meta` and skips parsing when the
+  file length and the last line still match. Per-task totals are cached for
+  up to 64 tasks. With more tasks, spend still reads the ledger to total
+  that one task. The ledger file remains the record. A same-length edit that
+  leaves the last line unchanged is picked up by `brief`, `ledger` and
+  `check`, which rewrite the cache. Numbers are in `docs/perf/1.2.0.md`.
+
 ## 1.1.2
 
 Same on-disk format for a valid store. A note or ledger line that was already

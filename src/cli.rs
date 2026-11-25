@@ -17,7 +17,7 @@ USAGE
   libellus note --agent A --kind K --summary S [--body B] [--id I] [--status open|resolved]
                 [--evidence tool:ref]... [--tags T]...
   libellus get --agent A --id I
-  libellus resolve --agent A --id I --outcome TEXT
+  libellus resolve --agent A --id I --outcome TEXT [--supersede]
   libellus ls --agent A [--kind K] [--status S] [--limit N] [--offset N] [--before_id ID] [--bodies]
   libellus brief --agent A [--max_items N] [--host text|cursor]
                                               print the compaction brief as text
@@ -25,6 +25,7 @@ USAGE
   libellus spend --agent A --task T [--step S] [--model M] [--tokens_in N] [--tokens_out N]
                  [--cost_micro_usd N] [--note TEXT]
   libellus ledger [--agent A] [--task T] [--step S]
+  libellus archive --agent A            move the ledger into archive/ and start a fresh one
   libellus hook --agent NAME [--host cursor|claude|generic]
   libellus check                      read every note and ledger; fail on any damage
   libellus mcp                        start the stdio MCP server (same as libellus-mcp)

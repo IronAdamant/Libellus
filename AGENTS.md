@@ -41,7 +41,9 @@ cargo build --release --locked
 ## Layout
 
 - `src/json.rs` bounded JSON. `src/fsx.rs` atomic writes, path and slug guards.
+  `src/reap.rs` stale locks and leftover temp files. `src/seq.rs` the note sequence.
 - `src/tool.rs` tool table types and argument validation. `src/tools.rs` the tools.
+  `src/brief.rs` the session brief. `src/ledger_meta.rs` the spend totals cache.
 - `src/mcp.rs` the server. `src/groups.rs` the `agent-tools` block and
   `LIBELLUS_TOOLS` / `LIBELLUS_DISABLE`.
 - `src/note.rs` notes. `src/ledger.rs` the ledger. `src/ledger_cmd.rs` spend and ledger commands.

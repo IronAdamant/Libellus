@@ -6,6 +6,7 @@
 
 use crate::fsx;
 use crate::store::Store;
+use std::cmp::Ordering;
 use std::fs;
 use std::path::Path;
 
@@ -31,6 +32,10 @@ pub struct Note {
     pub evidence: Vec<String>,
     pub tags: Vec<String>,
     pub promoted: Option<String>,
+    /// Monotonic per agent. Absent on notes written before 1.2.0.
+    pub seq: Option<u64>,
+    /// Set when a resolved note was marked replaced.
+    pub superseded: bool,
     pub body: String,
 }
 
@@ -57,6 +62,14 @@ pub fn validate_summary(s: &str) -> Result<(), String> {
 /// A one-line outcome appended by `libellus_resolve`. Same limits as a summary.
 pub fn validate_outcome(s: &str) -> Result<(), String> {
     validate_line("outcome", s, false)
+}
+
+/// An outcome that records a replacement, not a first answer.
+///
+/// `libellus_resolve` treats these prefixes as `supersede`, including on a
+/// note that is already resolved. The colon keeps ordinary sentences out.
+pub fn marks_replaced(outcome: &str) -> bool {
+    outcome.starts_with("SUPERSEDED:") || outcome.starts_with("REVERSED:")
 }
 
 fn validate_line(label: &str, s: &str, suggest_body: bool) -> Result<(), String> {
@@ -143,6 +156,12 @@ impl Note {
             "kind: {}\nstatus: {}\nsummary: {}\nagent: {}\ncreated: {}\n",
             self.kind, self.status, self.summary, self.agent, self.created
         ));
+        if let Some(seq) = self.seq {
+            s.push_str(&format!("seq: {seq}\n"));
+        }
+        if self.superseded {
+            s.push_str("superseded: true\n");
+        }
         if !self.evidence.is_empty() {
             s.push_str(&format!("evidence: [{}]\n", self.evidence.join(", ")));
         }
@@ -183,7 +202,16 @@ impl Note {
                 .ok_or_else(|| format!("bad frontmatter line \"{}\"", fsx::clip(line, 60)))?;
             let (k, v) = (k.trim(), v.trim());
             if ![
-                "kind", "status", "summary", "agent", "created", "evidence", "tags", "promoted",
+                "kind",
+                "status",
+                "summary",
+                "agent",
+                "created",
+                "seq",
+                "superseded",
+                "evidence",
+                "tags",
+                "promoted",
             ]
             .contains(&k)
             {
@@ -252,6 +280,15 @@ impl Note {
         if !fsx::valid_timestamp(&created) {
             return Err(format!("created \"{created}\" is not YYYY-MM-DDTHH:MM:SSZ"));
         }
+        let seq = match get("seq") {
+            None => None,
+            Some(v) => Some(parse_seq(&v).map_err(|e| format!("seq {e}"))?),
+        };
+        let superseded = match get("superseded") {
+            None => false,
+            Some(v) if v == "true" => true,
+            Some(v) => return Err(format!("superseded \"{v}\" is not true")),
+        };
         let body_start = consumed.min(text.len());
         let body = text[body_start..].trim_matches('\n').to_string();
         Ok(Note {
@@ -264,9 +301,37 @@ impl Note {
             evidence,
             tags,
             promoted: get("promoted").filter(|p| !p.is_empty()),
+            seq,
+            superseded,
             body,
         })
     }
+}
+
+/// Oldest first. Notes with `seq` order by that number. Notes without it
+/// (written before 1.2.0) order by `created`, then id. Inside one second, a
+/// note that has `seq` is newer than one that does not.
+pub fn cmp_notes(a: &Note, b: &Note) -> Ordering {
+    match (a.seq, b.seq) {
+        (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.id.cmp(&b.id)),
+        (None, None) => a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)),
+        (Some(_), None) => match a.created.cmp(&b.created) {
+            Ordering::Equal => Ordering::Greater,
+            other => other,
+        },
+        (None, Some(_)) => match a.created.cmp(&b.created) {
+            Ordering::Equal => Ordering::Less,
+            other => other,
+        },
+    }
+}
+
+pub(crate) fn parse_seq(v: &str) -> Result<u64, String> {
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("\"{v}\" is not a whole number"));
+    }
+    v.parse()
+        .map_err(|_| format!("\"{v}\" does not fit in 64 bits"))
 }
 
 /// Every note of an agent, oldest first. A damaged or oversized note fails
@@ -282,7 +347,7 @@ pub fn load_all(store: &Store, agent: &str) -> Result<Loaded, String> {
     } else {
         read_notes_parallel(&ids)?
     };
-    notes.sort_by(|a, b| a.created.cmp(&b.created).then(a.id.cmp(&b.id)));
+    notes.sort_by(cmp_notes);
     notes.retain(|note| {
         if note.agent == agent {
             true
@@ -462,6 +527,8 @@ mod tests {
             evidence: vec!["trammel:plan-3/step-2".into()],
             tags: vec!["net".into()],
             promoted: None,
+            seq: None,
+            superseded: false,
             body: "Line one.\n\n---\nstill body".into(),
         }
     }
@@ -504,6 +571,40 @@ mod tests {
         assert!(!valid_pointer("chisel:"));
         assert!(!valid_pointer("chisel:a b"));
         assert!(!valid_pointer("Chisel:a"));
+    }
+
+    #[test]
+    fn seq_orders_notes_written_in_the_same_second() {
+        let mut older = sample();
+        older.id = "zzz-older".into();
+        older.seq = Some(1);
+        let mut newer = sample();
+        newer.id = "aaa-newer".into();
+        newer.seq = Some(2);
+        let mut legacy = sample();
+        legacy.id = "mmm-legacy".into();
+        legacy.seq = None;
+        let mut notes = vec![newer.clone(), legacy.clone(), older.clone()];
+        notes.sort_by(cmp_notes);
+        assert_eq!(notes[0].id, "mmm-legacy");
+        assert_eq!(notes[1].id, "zzz-older");
+        assert_eq!(notes[2].id, "aaa-newer");
+        let rendered = {
+            let mut n = newer.clone();
+            n.superseded = true;
+            n.render()
+        };
+        let parsed = Note::parse("aaa-newer", &rendered).unwrap();
+        assert_eq!(parsed.seq, Some(2));
+        assert!(parsed.superseded);
+        assert!(marks_replaced("SUPERSEDED: use queue Y"));
+        assert!(marks_replaced("REVERSED: use 16"));
+        assert!(!marks_replaced("REVERSED the polarity"));
+        assert!(Note::parse(
+            "x",
+            &sample().render().replace("created:", "seq: no\ncreated:")
+        )
+        .is_err());
     }
 
     #[test]

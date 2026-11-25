@@ -45,12 +45,82 @@ pub fn spend(a: &Args) -> Result<Value, String> {
         cost_micro_usd: c.unwrap_or(0),
         note: a.str("note").map(String::from),
     };
-    let all = ledger::append(&store, &entry)?;
-    let mine: Vec<Entry> = all.iter().filter(|e| e.task == task).cloned().collect();
+    let recorded = ledger::append(&store, &entry)?;
     Ok(Value::obj(vec![
         ("recorded", Value::Bool(true)),
-        ("task_total", ledger::total(&mine)?.to_value()),
-        ("agent_total", ledger::total(&all)?.to_value()),
+        ("task_total", recorded.task.to_value()),
+        ("agent_total", recorded.agent.to_value()),
+    ]))
+}
+
+/// Move the ledger aside into `archive/` and start a fresh one. The old bytes
+/// are kept. Totals after this call are for the new file only.
+pub fn archive(agent: &str) -> Result<Value, String> {
+    let store = Store::open()?;
+    let path = store.ledger_path(agent)?;
+    if let Some(dir) = path.parent() {
+        fsx::make_private_dir(dir)?;
+    }
+    let _lock = fsx::Lock::acquire(&path)?;
+    fsx::refuse_special(&path)?;
+    let len = match fsx::file_kind(&path)? {
+        fsx::FileKind::Missing => {
+            return Err(format!("no ledger to archive for agent \"{agent}\""));
+        }
+        fsx::FileKind::Regular { len: 0 } => {
+            return Err(format!(
+                "ledger {} is empty; nothing to archive",
+                path.display()
+            ));
+        }
+        fsx::FileKind::Regular { len } => len,
+        fsx::FileKind::Symlink => {
+            return Err(format!(
+                "{} is a symlink; refusing to follow it",
+                path.display()
+            ));
+        }
+        fsx::FileKind::Other => {
+            return Err(format!(
+                "{} is not a regular file; refusing to open it",
+                path.display()
+            ));
+        }
+    };
+    let archive_dir = store.agent_dir(agent)?.join("archive");
+    fsx::make_private_dir(&archive_dir)?;
+    let stamp: String = fsx::now_iso()
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == 'T' || *c == 'Z')
+        .collect();
+    let mut dest = archive_dir.join(format!("ledger-{stamp}.jsonl"));
+    let mut n = 2u32;
+    while matches!(
+        fsx::file_kind(&dest)?,
+        fsx::FileKind::Regular { .. } | fsx::FileKind::Symlink | fsx::FileKind::Other
+    ) {
+        dest = archive_dir.join(format!("ledger-{stamp}-{n}.jsonl"));
+        n += 1;
+        if n > 1000 {
+            return Err("could not pick an archive name".into());
+        }
+    }
+    std::fs::rename(&path, &dest).map_err(|e| {
+        format!(
+            "cannot archive {} to {}: {e}. The ledger was not changed.",
+            path.display(),
+            dest.display()
+        )
+    })?;
+    let meta = path.with_file_name("ledger.meta");
+    if matches!(fsx::file_kind(&meta)?, fsx::FileKind::Regular { .. }) {
+        let meta_dest = dest.with_extension("meta");
+        let _ = std::fs::rename(&meta, &meta_dest);
+    }
+    Ok(Value::obj(vec![
+        ("agent", Value::str(agent)),
+        ("archived", Value::String(dest.display().to_string())),
+        ("bytes", Value::uint(len)),
     ]))
 }
 
@@ -84,7 +154,7 @@ pub fn report(a: &Args) -> Result<Value, String> {
     let mut entries = Vec::new();
     let mut ledger_error = None;
     for name in &agents {
-        let summed = ledger::read_summed(&store, name)?;
+        let summed = ledger::load_report(&store, name)?;
         let mut rows = summed.entries;
         if ledger_error.is_none() {
             if let Some(warning) = summed.warnings.into_iter().next() {

@@ -2,7 +2,6 @@
 
 use crate::fsx;
 use crate::json::Value;
-use crate::ledger;
 use crate::note::{self, Note};
 use crate::promote;
 use crate::store::Store;
@@ -53,7 +52,7 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_resolve",
         group: "core",
-        description: "Mark one of your notes resolved and append a one-line outcome. A note that is already resolved is left unchanged and the error says so.",
+        description: "Mark one of your notes resolved and append a one-line outcome. A note that is already resolved is left unchanged unless supersede is set, or the outcome starts with SUPERSEDED: or REVERSED:.",
         params: &[
             AGENT,
             NOTE_ID,
@@ -61,7 +60,14 @@ pub static TOOLS: &[Tool] = &[
                 name: "outcome",
                 kind: Kind::Str,
                 required: true,
-                doc: "One line, up to 200 characters, appended to the body.",
+                doc: "One line, up to 200 characters, appended to the body. SUPERSEDED: or REVERSED: marks the note replaced.",
+                choices: &[],
+            },
+            Param {
+                name: "supersede",
+                kind: Kind::Bool,
+                required: false,
+                doc: "Mark the note replaced. Allowed when it is already resolved.",
                 choices: &[],
             },
         ],
@@ -77,7 +83,7 @@ pub static TOOLS: &[Tool] = &[
             Param { name: "status", kind: Kind::Str, required: false, doc: "Only this status.", choices: note::STATUSES },
             Param { name: "limit", kind: Kind::UInt, required: false, doc: "Most notes to return, newest kept. Default 50. Minimum 1.", choices: &[] },
             Param { name: "offset", kind: Kind::UInt, required: false, doc: "Skip this many of the newest notes before applying limit. Default 0. Prefer before_id: a note written between pages can show up twice with offset.", choices: &[] },
-            Param { name: "before_id", kind: Kind::Str, required: false, doc: "Stable cursor: only notes older than this id (by created, then id). Use next_before_id from the previous page.", choices: &[] },
+            Param { name: "before_id", kind: Kind::Str, required: false, doc: "Stable cursor: only notes older than this id (by seq, or by created then id). Use next_before_id from the previous page.", choices: &[] },
             Param { name: "bodies", kind: Kind::Bool, required: false, doc: "Include each body (cut at 4000 characters).", choices: &[] },
         ],
         run: note_ls,
@@ -85,10 +91,10 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_brief",
         group: "core",
-        description: "Call this when a session starts and after compaction, before other work. Returns open questions, recent decisions, dead ends, costs, and a short text you can paste back. A Next line is added only when a question is open or a decision or dead end is not promoted.",
+        description: "Call this when a session starts and after compaction, before other work. Returns open questions, the latest context, recent decisions, replaced decisions, dead ends, findings, costs, and a short text. max_items caps every section (default 5, at most 50). The text is capped at 8192 bytes and says when it was cut. A ledger that cannot be read sets ledger_error and still returns the notes. A Next line is added only when a question is open or a decision or dead end is not promoted.",
         params: &[
             AGENT,
-            Param { name: "max_items", kind: Kind::UInt, required: false, doc: "Most notes per section. Default 5.", choices: &[] },
+            Param { name: "max_items", kind: Kind::UInt, required: false, doc: "Most notes per section, including open questions and task costs. Default 5. At most 50. Newest items are kept.", choices: &[] },
         ],
         run: brief,
     },
@@ -128,7 +134,7 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_ledger",
         group: "ledger",
-        description: "Totals of tokens and cost. Pass agent, task, or step to narrow. Omit agent to sum every agent in the store. A damaged ledger is an error, names the file, and is not repaired.",
+        description: "Totals of tokens and cost. Pass agent, task, or step to narrow. Omit agent to sum every agent in the store. A damaged ledger is an error, names the file, and is not repaired. by_task lists every task. The brief caps that list.",
         params: &[
             Param {
                 name: "agent",
@@ -143,9 +149,16 @@ pub static TOOLS: &[Tool] = &[
         run: ledger_report,
     },
     Tool {
+        name: "libellus_archive",
+        group: "ledger",
+        description: "Move this agent's ledger into archive/ and start a fresh ledger. The old file is kept and is not included in later totals. Use this when a spend says the ledger is over the 32 MiB cap.",
+        params: &[AGENT],
+        run: archive_ledger,
+    },
+    Tool {
         name: "libellus_check",
         group: "core",
-        description: "Read every note and ledger. Fails if a file is damaged, a note is over the size cap, a total overflows, a note's agent field does not match its folder, a ledger line was left out, or a stale lock is left behind.",
+        description: "Read every note and ledger. Fails if a file is damaged, a note is over the size cap, a total overflows, a note's agent field does not match its folder, a ledger line was left out, or a stale lock is left behind. Stale locks and leftover temp files are removed first.",
         params: &[],
         run: check_tool,
     },
@@ -178,6 +191,7 @@ fn note_add(a: &Args) -> Result<Value, String> {
         }
     });
     let notes_dir = store.notes_dir(agent)?;
+    let seq = crate::seq::alloc_seq(&store, agent)?;
     let given = a.str("id").map(str::to_string);
     let attempts: u32 = if given.is_some() { 1 } else { 999 };
     for ntry in 1..=attempts {
@@ -207,6 +221,8 @@ fn note_add(a: &Args) -> Result<Value, String> {
             evidence: evidence.clone(),
             tags: tags.clone(),
             promoted: None,
+            seq: Some(seq),
+            superseded: false,
             body: a.str("body").unwrap_or_default().to_string(),
         };
         match fsx::write_atomic(&path, n.render().as_bytes(), false) {
@@ -273,12 +289,16 @@ fn note_resolve(a: &Args) -> Result<Value, String> {
         None
     };
     let mut note = note::load_one(&store, agent, id)?;
-    if note.status == "resolved" {
+    let supersede = a.bool("supersede").unwrap_or(false) || note::marks_replaced(outcome);
+    if note.status == "resolved" && !supersede {
         return Err(format!(
-            "note \"{id}\" is already resolved. The file was not changed. Read it with libellus_get."
+            "note \"{id}\" is already resolved. The file was not changed. Read it with libellus_get. To mark it replaced, pass supersede or an outcome that starts with SUPERSEDED: or REVERSED:."
         ));
     }
     note.status = "resolved".to_string();
+    if supersede {
+        note.superseded = true;
+    }
     let body = note::append_outcome(&note.body, outcome);
     note.body = body;
     let path = note::note_path(&store, agent, id)?;
@@ -306,6 +326,12 @@ fn note_full(n: &Note) -> Value {
         ),
         ("body", Value::str(&n.body)),
     ];
+    if let Some(seq) = n.seq {
+        p.push(("seq", Value::uint(seq)));
+    }
+    if n.superseded {
+        p.push(("superseded", Value::Bool(true)));
+    }
     if let Some(pr) = &n.promoted {
         p.push(("promoted", Value::str(pr)));
     }
@@ -320,6 +346,12 @@ fn note_value(n: &Note, body: bool) -> Value {
         ("summary", Value::str(&n.summary)),
         ("created", Value::str(&n.created)),
     ];
+    if let Some(seq) = n.seq {
+        p.push(("seq", Value::uint(seq)));
+    }
+    if n.superseded {
+        p.push(("superseded", Value::Bool(true)));
+    }
     if !n.evidence.is_empty() {
         p.push((
             "evidence",
@@ -357,9 +389,7 @@ fn note_ls(a: &Args) -> Result<Value, String> {
         let cursor = notes.iter().find(|n| n.id == id).cloned().ok_or_else(|| {
             format!("before_id \"{id}\" is not in this list. Call libellus_ls without before_id.")
         })?;
-        notes.retain(|n| {
-            (n.created.as_str(), n.id.as_str()) < (cursor.created.as_str(), cursor.id.as_str())
-        });
+        notes.retain(|n| note::cmp_notes(n, &cursor).is_lt());
     }
     // Newest notes are at the end. offset skips that many, then limit keeps
     // the newest of what remains. offset 0 with no before_id is the 1.0.0 page.
@@ -411,123 +441,11 @@ fn note_ls(a: &Args) -> Result<Value, String> {
 }
 
 fn brief(a: &Args) -> Result<Value, String> {
-    let store = Store::open()?;
-    let agent = a.str("agent").unwrap_or_default();
-    let max = a.uint("max_items").unwrap_or(5) as usize;
-    let loaded = note::load_all(&store, agent)?;
-    let notes = loaded.notes;
-    let summed = ledger::read_summed(&store, agent)?;
-    let entries = summed.entries;
-    let totals = summed.totals;
-    let overflow_line = summed.overflow_line;
-    let ledger_warnings = summed.warnings;
-    let tasks = ledger::by_task(&entries)?;
-    let ledger_error = overflow_line.map(|line| {
-        format!(
-            "ledger totals overflowed a 64-bit number at line {line}. Totals above stop before that line."
-        )
-    });
-    let latest = |kind: &str, status: Option<&str>| -> Vec<&Note> {
-        let mut v: Vec<&Note> = notes
-            .iter()
-            .filter(|n| n.kind == kind && status.is_none_or(|s| n.status == s))
-            .collect();
-        if v.len() > max {
-            v.drain(..v.len() - max);
-        }
-        v
-    };
-    let open: Vec<&Note> = notes
-        .iter()
-        .filter(|n| n.kind == "question" && n.status == "open")
-        .collect();
-    let decisions = latest("decision", None);
-    let dead_ends = latest("dead-end", None);
-    let mut text = format!(
-        "# Libellus brief for {agent}\n\n## Open questions ({})\n",
-        open.len()
-    );
-    for n in &open {
-        text.push_str(&format!("- {}: {}\n", n.id, n.summary));
-    }
-    text.push_str("\n## Recent decisions\n");
-    for n in &decisions {
-        text.push_str(&format!("- {}: {}\n", n.id, n.summary));
-    }
-    text.push_str("\n## Dead ends\n");
-    for n in &dead_ends {
-        text.push_str(&format!("- {}: {}\n", n.id, n.summary));
-    }
-    text.push_str(&format!(
-        "\n## Costs\n- total: {} in, {} out tokens, {} micro-USD ({} ledger entries)\n",
-        totals.tokens_in,
-        totals.tokens_out,
-        totals.cost_micro_usd,
-        entries.len()
-    ));
-    for (task, t) in tasks.iter().take(max) {
-        text.push_str(&format!(
-            "- {task}: {} in, {} out, {} micro-USD\n",
-            t.tokens_in, t.tokens_out, t.cost_micro_usd
-        ));
-    }
-    let mut next_bits = Vec::new();
-    if !open.is_empty() {
-        next_bits.push("resolve an open question with libellus_resolve");
-    }
-    let unshared = decisions
-        .iter()
-        .chain(dead_ends.iter())
-        .any(|n| n.promoted.is_none());
-    if unshared {
-        next_bits.push("share a note with libellus_promote");
-    }
-    if !next_bits.is_empty() {
-        text.push_str("\nNext: ");
-        text.push_str(&next_bits.join("; "));
-        text.push_str(".\n");
-    }
-    for warning in loaded.warnings.iter().chain(ledger_warnings.iter()) {
-        text.push_str(&format!("\nWarning: {warning}\n"));
-    }
-    if let Some(err) = &ledger_error {
-        text.push_str(&format!("\nLedger: {err}\n"));
-    }
-    let short = |v: &[&Note]| Value::Array(v.iter().map(|n| note_value(n, false)).collect());
-    let mut pairs = vec![
-        ("agent".to_string(), Value::str(agent)),
-        ("open_questions".to_string(), short(&open)),
-        ("recent_decisions".to_string(), short(&decisions)),
-        ("dead_ends".to_string(), short(&dead_ends)),
-        (
-            "costs".to_string(),
-            Value::obj(vec![
-                ("total", totals.to_value()),
-                (
-                    "by_task",
-                    Value::Object(
-                        tasks
-                            .iter()
-                            .map(|(k, t)| (k.clone(), t.to_value()))
-                            .collect(),
-                    ),
-                ),
-            ]),
-        ),
-        ("text".to_string(), Value::String(text)),
-    ];
-    if let Some(err) = ledger_error {
-        pairs.push(("ledger_error".to_string(), Value::String(err)));
-    }
-    let mut warnings = loaded.warnings;
-    warnings.extend(ledger_warnings);
-    if !warnings.is_empty() {
-        pairs.push((
-            "warnings".to_string(),
-            Value::Array(warnings.iter().map(Value::str).collect()),
-        ));
-    }
-    Ok(Value::Object(pairs))
+    crate::brief::run(a)
+}
+
+fn archive_ledger(a: &Args) -> Result<Value, String> {
+    crate::ledger_cmd::archive(a.str("agent").unwrap_or_default())
 }
 
 fn promote_note(a: &Args) -> Result<Value, String> {

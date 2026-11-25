@@ -8,6 +8,7 @@ use crate::store::Store;
 
 pub fn run() -> Result<Value, String> {
     let store = Store::open()?;
+    let removed = crate::reap::reap_abandoned(&store.dir);
     let mut agents = Vec::new();
     let mut problems = Vec::new();
     let mut strays = Vec::new();
@@ -25,6 +26,7 @@ pub fn run() -> Result<Value, String> {
                 path.display()
             ));
         }
+        problems.extend(check_archives(&store, &agent)?);
         agents.push(Value::obj(vec![
             ("agent", Value::str(&agent)),
             ("notes", Value::uint(loaded.notes.len() as u64)),
@@ -32,6 +34,7 @@ pub fn run() -> Result<Value, String> {
         ]));
         find_temps(&store.agent_dir(&agent)?, &mut strays);
     }
+    // A lock that reap could not delete is still a problem.
     problems.extend(fsx::stale_lock_notes(&store.dir));
     if !problems.is_empty() {
         return Err(problems.join("; "));
@@ -39,6 +42,15 @@ pub fn run() -> Result<Value, String> {
     Ok(Value::obj(vec![
         ("ok", Value::Bool(true)),
         ("agents", Value::Array(agents)),
+        (
+            "removed",
+            Value::Array(
+                removed
+                    .iter()
+                    .map(|s| Value::str(fsx::clip(s, 300)))
+                    .collect(),
+            ),
+        ),
         (
             "stray_temp_files",
             Value::Array(
@@ -49,6 +61,43 @@ pub fn run() -> Result<Value, String> {
             ),
         ),
     ]))
+}
+
+/// Archived ledgers are kept and are not part of the live cap. A damaged
+/// archive is still an error. The file-size cap applies only to the live ledger.
+fn check_archives(store: &Store, agent: &str) -> Result<Vec<String>, String> {
+    let dir = store.agent_dir(agent)?.join("archive");
+    let rd = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("cannot read {}: {e}", dir.display())),
+    };
+    let mut problems = Vec::new();
+    for entry in rd {
+        let entry = entry.map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.ends_with(".jsonl") {
+            continue;
+        }
+        match ledger::read_at(&path, agent, false) {
+            Ok(read) => {
+                problems.extend(read.warnings);
+                let (_totals, bad) = ledger::sum_prefix(&read.entries);
+                if let Some(line) = bad {
+                    problems.push(format!(
+                        "ledger {} line {line}: totals overflowed a 64-bit number",
+                        path.display()
+                    ));
+                }
+            }
+            Err(err) => problems.push(err),
+        }
+    }
+    Ok(problems)
 }
 
 fn find_temps(dir: &std::path::Path, out: &mut Vec<String>) {

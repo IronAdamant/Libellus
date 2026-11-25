@@ -166,7 +166,16 @@ fn a_corrupt_ledger_is_an_error_and_is_not_extended() {
         &dir,
         call("libellus_brief", r#"{"agent":"main"}"#, 1).as_bytes(),
     );
-    assert!(is_error(&r[0]));
+    assert!(
+        is_ok(&r[0]) && r[0].contains("ledger_error") && r[0].contains("line 2"),
+        "{}",
+        r[0]
+    );
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        text,
+        "a brief must not rewrite a damaged ledger"
+    );
 }
 
 #[test]
