@@ -98,7 +98,9 @@ pub fn load_one(store: &Store, agent: &str, id: &str) -> Result<Note, String> {
     let meta = match fs::symlink_metadata(&path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(format!("no note \"{id}\" for agent \"{agent}\""));
+            return Err(format!(
+                "no note \"{id}\" for agent \"{agent}\". List ids with libellus_ls, or create one with libellus_note."
+            ));
         }
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
     };

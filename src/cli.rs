@@ -18,7 +18,7 @@ USAGE
                 [--evidence tool:ref]... [--tags T]...
   libellus get --agent A --id I
   libellus resolve --agent A --id I --outcome TEXT
-  libellus ls --agent A [--kind K] [--status S] [--limit N] [--bodies]
+  libellus ls --agent A [--kind K] [--status S] [--limit N] [--offset N] [--bodies]
   libellus brief --agent A [--max_items N] [--host text|cursor]
                                               print the compaction brief as text
   libellus promote --agent A --id I --scope SCOPE

@@ -30,7 +30,7 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_note",
         group: "core",
-        description: "Write a private note: a decision, dead-end, question, finding or context. Questions start open; resolve them when answered. Point at evidence (tool:ref) instead of copying it.",
+        description: "Write a private note before you forget a decision, a dead end, or an open question. Never overwrites: an existing id fails, and the error tells you to get it or pick a new id. Point at evidence as tool:reference instead of copying it.",
         params: &[
             AGENT,
             Param { name: "kind", kind: Kind::Str, required: true, doc: "What the note is.", choices: note::KINDS },
@@ -46,14 +46,14 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_get",
         group: "core",
-        description: "Read one of your notes by id, including its body. Missing or corrupt is an error.",
+        description: "Read one of your notes by id, including its body. Use this when you know the id. Missing, corrupt, or another agent's file is an error that says how to list or create the note.",
         params: &[AGENT, NOTE_ID],
         run: note_get,
     },
     Tool {
         name: "libellus_resolve",
         group: "core",
-        description: "Mark one of your notes resolved and append a one-line outcome. Refuses a note that is already resolved.",
+        description: "Mark one of your notes resolved and append a one-line outcome. A note that is already resolved is left unchanged and the error says so.",
         params: &[
             AGENT,
             NOTE_ID,
@@ -70,12 +70,13 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_ls",
         group: "core",
-        description: "List your own notes, oldest first, with optional filters. Set bodies to read the detail too.",
+        description: "List your notes, oldest first within the page. limit (default 50) keeps the newest page. offset skips that many newest notes so the next call can read the older page. total is the full count.",
         params: &[
             AGENT,
             Param { name: "kind", kind: Kind::Str, required: false, doc: "Only this kind.", choices: note::KINDS },
             Param { name: "status", kind: Kind::Str, required: false, doc: "Only this status.", choices: note::STATUSES },
-            Param { name: "limit", kind: Kind::UInt, required: false, doc: "Most notes to return, newest kept. Default 50.", choices: &[] },
+            Param { name: "limit", kind: Kind::UInt, required: false, doc: "Most notes to return, newest kept. Default 50. 0 returns none.", choices: &[] },
+            Param { name: "offset", kind: Kind::UInt, required: false, doc: "Skip this many of the newest notes before applying limit. Default 0, which is the same page as before.", choices: &[] },
             Param { name: "bodies", kind: Kind::Bool, required: false, doc: "Include each body (cut at 4000 characters).", choices: &[] },
         ],
         run: note_ls,
@@ -83,7 +84,7 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_brief",
         group: "core",
-        description: "The compaction payload: your open questions, recent decisions and dead ends, and running costs. Call it when the context is squashed or a session resumes.",
+        description: "Call this when a session starts and after compaction, before other work. Returns open questions, recent decisions, dead ends, costs, and a short text you can paste back. The text ends with one Next line.",
         params: &[
             AGENT,
             Param { name: "max_items", kind: Kind::UInt, required: false, doc: "Most notes per section. Default 5.", choices: &[] },
@@ -100,7 +101,7 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_promote",
         group: "core",
-        description: "Copy one of your notes into the Relatum store as a shared note, and record that id in promoted. An open question must be resolved first. Does not run Relatum, and does not create .swarmnotes/.",
+        description: "Share one private note by writing it into Relatum, then record that id. An open question must be resolved first. A second call names the existing Relatum id and writes nothing. Does not run Relatum, and does not create .swarmnotes/.",
         params: &[
             AGENT,
             NOTE_ID,
@@ -117,7 +118,7 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_spend",
         group: "ledger",
-        description: "Record tokens and cost for a step. You report the numbers; Libellus only adds them up.",
+        description: "Append tokens and cost you already know for one step. Libellus only adds them up. Each call adds a line; it does not replace a previous spend.",
         params: &[
             AGENT,
             Param { name: "task", kind: Kind::Str, required: true, doc: "Task slug the spend belongs to.", choices: &[] },
@@ -133,7 +134,7 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_ledger",
         group: "ledger",
-        description: "Totals of tokens and cost, for one agent or every agent. Optional task and step filters. A damaged ledger is an error and is not repaired.",
+        description: "Totals of tokens and cost. Pass agent, task, or step to narrow. Omit agent to sum every agent in the store. A damaged ledger is an error, names the file, and is not repaired.",
         params: &[
             Param {
                 name: "agent",
@@ -194,8 +195,13 @@ fn note_add(a: &Args) -> Result<Value, String> {
         promoted: None,
         body: a.str("body").unwrap_or_default().to_string(),
     };
-    fsx::write_atomic(&path, n.render().as_bytes(), false)
-        .map_err(|e| format!("note \"{id}\" not written: {e}"))?;
+    fsx::write_atomic(&path, n.render().as_bytes(), false).map_err(|e| {
+        if e.contains("already exists") {
+            format!("note \"{id}\" already exists. Read it with libellus_get, or pass a new id.")
+        } else {
+            format!("note \"{id}\" not written: {e}")
+        }
+    })?;
     Ok(Value::obj(vec![
         ("id", Value::String(id)),
         ("kind", Value::str(kind)),
@@ -248,7 +254,9 @@ fn note_resolve(a: &Args) -> Result<Value, String> {
     note::validate_outcome(outcome)?;
     let mut note = note::load_one(&store, agent, id)?;
     if note.status == "resolved" {
-        return Err(format!("note \"{id}\" is already resolved"));
+        return Err(format!(
+            "note \"{id}\" is already resolved. The file was not changed. Read it with libellus_get."
+        ));
     }
     note.status = "resolved".to_string();
     let body = note::append_outcome(&note.body, outcome);
@@ -323,6 +331,14 @@ fn note_ls(a: &Args) -> Result<Value, String> {
     });
     let total = notes.len();
     let limit = a.uint("limit").unwrap_or(50) as usize;
+    let offset = a.uint("offset").unwrap_or(0) as usize;
+    // Newest notes are at the end. offset skips that many, then limit keeps
+    // the newest of what remains. offset 0 is the previous behaviour.
+    if offset >= notes.len() {
+        notes.clear();
+    } else if offset > 0 {
+        notes.truncate(notes.len() - offset);
+    }
     if notes.len() > limit {
         notes.drain(..notes.len() - limit);
     }
@@ -333,6 +349,8 @@ fn note_ls(a: &Args) -> Result<Value, String> {
             Value::Array(notes.iter().map(|n| note_value(n, bodies)).collect()),
         ),
         ("total", Value::uint(total as u64)),
+        ("offset", Value::uint(offset as u64)),
+        ("returned", Value::uint(notes.len() as u64)),
     ]))
 }
 
@@ -385,6 +403,9 @@ fn brief(a: &Args) -> Result<Value, String> {
             t.tokens_in, t.tokens_out, t.cost_micro_usd
         ));
     }
+    text.push_str(
+        "\nNext: resolve an open question with libellus_resolve, record cost with libellus_spend, share a note with libellus_promote.\n",
+    );
     let short = |v: &[&Note]| Value::Array(v.iter().map(|n| note_value(n, false)).collect());
     Ok(Value::obj(vec![
         ("agent", Value::str(agent)),
