@@ -1,8 +1,10 @@
 # Changelog
 
-## 1.0.0 (unreleased)
+## 1.0.0
 
-The first complete surface. Not tagged and not published.
+First release. A `v*` tag builds `libellus` and `libellus-mcp` for Linux x64,
+macOS x64, macOS arm64, and Windows x64, and publishes those archives with
+SHA256SUMS on the GitHub release. Not published to crates.io or npm.
 
 - `libellus_get` reads one note, including its body. Missing, corrupt, a
   symlink, or another agent's file is an error.
