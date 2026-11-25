@@ -1,6 +1,7 @@
 # Libellus
 
-A private notepad and number ledger for each AI agent. One std-only Rust crate:
+A private notepad and number ledger for each AI agent, plus one shared task
+board. One std-only Rust crate:
 the `libellus` CLI and the `libellus-mcp` stdio server (`libellus mcp` is the
 same program). Read `SPEC.md` for the format and `README.md` for what is built.
 
@@ -23,11 +24,16 @@ same program). Read `SPEC.md` for the format and `README.md` for what is built.
   `libellus hook` is a CLI command, not an MCP tool.
 - Notes stay private per agent. Sharing is `libellus_promote` into Relatum,
   not a shared scope here. Do not run the `relatum` binary and do not create
-  `.swarmnotes/` yourself.
+  `.swarmnotes/` yourself. The board (`.libellus/board/`) is the one
+  deliberate shared part: the agents' own working task list. Board writes
+  take the one board lock (`board/.board.lock`) from read to last write.
+- Anything that writes takes a batch, so an agent spends one call, not one
+  per item.
 - Out of scope, because other tools own it: code memory (Stele-Context), per-file
-  change notes (Wikifier), plans and constraints (Trammel), live coordination and
-  locks (CoordinationHub), swarm-shared notes (Relatum), cross-tool verification
-  (Adsertio).
+  change notes (Wikifier), plans of code changes in dependency order and their
+  verification (Trammel; the Libellus board is the agents' own working task
+  list, not that), live coordination and locks (CoordinationHub), swarm-shared
+  notes (Relatum), cross-tool verification (Adsertio).
 
 ## Commands
 
@@ -46,16 +52,25 @@ cargo build --release --locked
   `src/brief.rs` the session brief. `src/ledger_meta.rs` the spend totals cache.
 - `src/mcp.rs` the server. `src/groups.rs` the `agent-tools` block and
   `LIBELLUS_TOOLS` / `LIBELLUS_DISABLE`.
-- `src/note.rs` notes. `src/ledger.rs` the ledger. `src/ledger_cmd.rs` spend and ledger commands.
+- `src/note.rs` notes. `src/note_cmd.rs` note and resolve, single or batched.
+  `src/ledger.rs` the ledger. `src/ledger_cmd.rs` spend and ledger commands.
+- `src/board.rs` board tasks, loading and the tree. `src/plan.rs` `libellus_plan`:
+  ops, the outline, cascades, the board lock and writes. `src/board_view.rs`
+  `libellus_board` and the brief's Board section. `src/html.rs` `board.html`.
+- `src/doctor.rs` `libellus doctor`.
 - `src/store.rs` store lookup.
-- `src/promote.rs` the Relatum promote step. `src/hook.rs` the hook snippet.
+- `src/promote.rs` the Relatum promote step. `src/hook.rs` the hook snippet and
+  `hook-run` (what the Claude Code hooks run).
 - `src/cli.rs` the command line. `LIBELLUS_AGENT` fills a required agent.
-- `src/check.rs` the store check used by the CLI and `libellus_check`.
+- `src/check.rs` the store check used by the CLI, `libellus_check` and doctor
+  (notes, ledgers and the board).
 - `fsx::Lock` is the create-exclusive lock around resolve, promote, spend,
-  archive, ledger reads and the seq counter. Stale locks are removed only by
+  archive, ledger reads, the seq counters and every board write. Stale locks are removed only by
   `fsx::break_stale_lock`.
 - `examples/perf.rs` release timings. `docs/perf/` the recorded numbers.
 - `tests/hostile_input.rs`, `tests/store_integrity.rs`, `tests/cli_and_groups.rs`,
   `tests/note_life.rs`, `tests/ledger_groups.rs`, `tests/promote.rs`,
-  `tests/hook.rs`, `tests/agent_ux.rs`, `tests/review4.rs`, `tests/review5.rs`: the failure modes the design avoids.
+  `tests/hook.rs`, `tests/agent_ux.rs`, `tests/review4.rs`, `tests/review5.rs`,
+  `tests/v130.rs` (batches, the board, the page, doctor, hooks): the failure
+  modes the design avoids.
   Keep them passing.

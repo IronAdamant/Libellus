@@ -1,13 +1,12 @@
 //! The tool table: what an agent can do, over MCP or the CLI.
 
-use crate::fsx;
 use crate::json::Value;
 use crate::note::{self, Note};
 use crate::promote;
 use crate::store::Store;
 use crate::tool::{Args, Kind, Param, Tool};
 
-pub const GROUPS: &[&str] = &["core", "ledger"];
+pub const GROUPS: &[&str] = &["core", "ledger", "board"];
 
 const AGENT: Param = Param {
     name: "agent",
@@ -29,18 +28,19 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_note",
         group: "core",
-        description: "Write a private note before you forget a decision, a dead end, or an open question. Never overwrites: an existing id fails, and the error tells you to get it or pick a new id. Point at evidence as tool:reference instead of copying it.",
+        description: "Write private notes before you forget a decision, a dead end, or an open question. Batch: pass notes (up to 50) to write several in one call, which costs one turn instead of one per note. A batch is checked whole first: one bad note writes nothing and the error names it. Or pass one note's kind and summary. Never overwrites: a taken id fails. Point at evidence as tool:reference instead of copying it.",
         params: &[
             AGENT,
-            Param { name: "kind", kind: Kind::Str, required: true, doc: "What the note is.", choices: note::KINDS },
-            Param { name: "summary", kind: Kind::Str, required: true, doc: "One line, up to 200 characters.", choices: &[] },
+            Param { name: "notes", kind: Kind::Objects(NOTE_FIELDS, crate::note_cmd::MAX_BATCH), required: false, doc: "A batch of up to 50 notes, each {kind, summary, body?, id?, status?, evidence?, tags?}. Use this instead of the single-note fields.", choices: &[] },
+            Param { name: "kind", kind: Kind::Str, required: false, doc: "One note: what it is. Required without notes.", choices: note::KINDS },
+            Param { name: "summary", kind: Kind::Str, required: false, doc: "One note: one line, up to 200 characters. Required without notes.", choices: &[] },
             Param { name: "body", kind: Kind::Str, required: false, doc: "The detail, under about 300 words, at most 20000 bytes.", choices: &[] },
             Param { name: "id", kind: Kind::Str, required: false, doc: "Slug, up to two segments (retry/post-question). Made from the summary if absent. Never overwrites.", choices: &[] },
             Param { name: "status", kind: Kind::Str, required: false, doc: "open or resolved. Default: open for a question, resolved otherwise.", choices: note::STATUSES },
             Param { name: "evidence", kind: Kind::StrList, required: false, doc: "Pointers to proof, each tool:reference (trammel:plan-3/step-2). No copies.", choices: &[] },
             Param { name: "tags", kind: Kind::StrList, required: false, doc: "Tag slugs.", choices: &[] },
         ],
-        run: note_add,
+        run: crate::note_cmd::add,
     },
     Tool {
         name: "libellus_get",
@@ -52,15 +52,16 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_resolve",
         group: "core",
-        description: "Mark one of your notes resolved and append a one-line outcome. A note that is already resolved is left unchanged unless supersede is set, or the outcome starts with SUPERSEDED: or REVERSED:.",
+        description: "Mark notes resolved and append a one-line outcome to each. Batch: pass items (up to 50 of {id, outcome, supersede?}) to close several in one call; one bad item writes nothing. A note that is already resolved is left unchanged unless supersede is set, or the outcome starts with SUPERSEDED: or REVERSED:.",
         params: &[
             AGENT,
-            NOTE_ID,
+            Param { name: "items", kind: Kind::Objects(RESOLVE_FIELDS, crate::note_cmd::MAX_BATCH), required: false, doc: "A batch of up to 50 {id, outcome, supersede?}. Use this instead of id and outcome.", choices: &[] },
+            Param { name: "id", kind: Kind::Str, required: false, doc: "One note: its id. Required without items.", choices: &[] },
             Param {
                 name: "outcome",
                 kind: Kind::Str,
-                required: true,
-                doc: "One line, up to 200 characters, appended to the body. SUPERSEDED: or REVERSED: marks the note replaced.",
+                required: false,
+                doc: "One note: one line, up to 200 characters, appended to the body. SUPERSEDED: or REVERSED: marks the note replaced. Required without items.",
                 choices: &[],
             },
             Param {
@@ -71,7 +72,7 @@ pub static TOOLS: &[Tool] = &[
                 choices: &[],
             },
         ],
-        run: note_resolve,
+        run: crate::note_cmd::resolve,
     },
     Tool {
         name: "libellus_ls",
@@ -91,7 +92,7 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_brief",
         group: "core",
-        description: "Call this when a session starts and after compaction, before other work. Returns open questions, the latest context, recent decisions, replaced decisions, dead ends, findings, costs, and a short text. max_items caps every section (default 5, at most 50). The text is capped at 8192 bytes and says when it was cut. A ledger that cannot be read sets ledger_error and still returns the notes. A Next line is added only when a question is open or a decision or dead end is not promoted.",
+        description: "Call this when a session starts and after compaction, before other work: it is the one call you need to pick up again. Returns your open board tasks (with their path in the tree), open questions, the latest context, recent decisions, replaced decisions, dead ends, findings, costs, and a short text. max_items caps every section (default 5, at most 50). The text is capped at 8192 bytes and says when it was cut. A ledger that cannot be read sets ledger_error and still returns the notes. A Next line is added only when a question is open or a decision or dead end is not promoted.",
         params: &[
             AGENT,
             Param { name: "max_items", kind: Kind::UInt, required: false, doc: "Most notes per section, including open questions and task costs. Default 5. At most 50. Newest items are kept.", choices: &[] },
@@ -158,119 +159,191 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "libellus_check",
         group: "core",
-        description: "Read every note and ledger. Fails if a file is damaged, a note is over the size cap, a total overflows, a note's agent field does not match its folder, a ledger line was left out, or a stale lock is left behind. Stale locks and leftover temp files are removed first.",
+        description: "Read every note, ledger and board task. Fails if a file is damaged, the board is out of step (an open child under a closed parent, an orphan), a note is over the size cap, a total overflows, a note's agent field does not match its folder, a ledger line was left out, or a stale lock is left behind. Stale locks and leftover temp files are removed first.",
         params: &[],
         run: check_tool,
     },
+    Tool {
+        name: "libellus_doctor",
+        group: "core",
+        description: "Diagnose the setup: version, store location, LIBELLUS_DIR and LIBELLUS_AGENT, whether the store is writable, damaged files, abandoned locks, the AGENTS.md tool-groups line, libellus-mcp beside the binary, the Relatum store. Returns ok and checks [{name, ok, detail, fix}]. Read-only unless fix is set, which only clears abandoned locks and temp files.",
+        params: &[Param { name: "fix", kind: Kind::Bool, required: false, doc: "Remove locks and temp files whose writer is gone, as check does. Nothing else is changed.", choices: &[] }],
+        run: crate::doctor::run,
+    },
+    Tool {
+        name: "libellus_plan",
+        group: "board",
+        description: "Change the shared task board in one call: the board is every agent's working task list (notes stay private). ops is a batch of up to 100 {add: {title, id?, parent?, owner?, status?}}, {set: {id, status?, title?, parent?, owner?, outcome?, evidence?}} or {remove: id}. outline adds a whole tree from a markdown checkbox list (\"- [ ] Project\\n  - [ ] Task\"; [x] done, [~] doing, [!] blocked, [-] dropped), under parent if given. Everything is checked first; one bad op writes nothing. A parent closes by itself when all its children are done or dropped (at least one done), up to the project, and a closed project moves to the archive. Dropping a task drops its open children. Reopening a child reopens parents that closed by themselves. A task cannot be done while a child is open. Batch your ticks: one call for several tasks.",
+        params: &[
+            AGENT,
+            Param { name: "ops", kind: Kind::Objects(OP_FIELDS, crate::plan::MAX_OPS), required: false, doc: "Up to 100 ops, applied in order: {add: {...}}, {set: {...}} or {remove: id}.", choices: &[] },
+            Param { name: "outline", kind: Kind::Str, required: false, doc: "A markdown checkbox list, two spaces or a tab per level: - [ ] todo, - [~] doing, - [!] blocked, - [x] done, - [-] dropped. Ids are made from the titles and returned in added.", choices: &[] },
+            Param { name: "parent", kind: Kind::Str, required: false, doc: "Task id the outline goes under. Omit to make its top lines projects.", choices: &[] },
+        ],
+        run: crate::plan::run,
+    },
+    Tool {
+        name: "libellus_board",
+        group: "board",
+        description: "Read the shared task board as a checkbox tree (ids shown, @owner when not you) plus counts per status. Open tasks only by default. Filter by owner or project. The brief already lists your own open tasks; call this for the whole picture.",
+        params: &[
+            AGENT,
+            Param { name: "owner", kind: Kind::Str, required: false, doc: "Only tasks owned by this agent (with their parents for context).", choices: &[] },
+            Param { name: "project", kind: Kind::Str, required: false, doc: "Only this project (a top-level task id).", choices: &[] },
+            Param { name: "open_only", kind: Kind::Bool, required: false, doc: "Only todo, doing and blocked tasks. Default true.", choices: &[] },
+            Param { name: "include_archived", kind: Kind::Bool, required: false, doc: "Also show archived (closed) projects.", choices: &[] },
+        ],
+        run: crate::board_view::run,
+    },
 ];
 
-fn note_add(a: &Args) -> Result<Value, String> {
-    let store = Store::open()?;
-    let agent = a.str("agent").unwrap_or_default();
-    let kind = a.str("kind").unwrap_or_default();
-    let summary = a.str("summary").unwrap_or_default();
-    note::validate_summary(summary)?;
-    let evidence: Vec<String> = a.list("evidence").iter().map(|s| s.to_string()).collect();
-    if let Some(bad) = evidence.iter().find(|p| !note::valid_pointer(p)) {
-        return Err(format!(
-            "bad evidence pointer \"{}\": use tool:reference with no spaces, commas or brackets",
-            fsx::clip(bad, 60)
-        ));
-    }
-    let mut tags: Vec<String> = a.list("tags").iter().map(|s| s.to_string()).collect();
-    if let Some(bad) = tags.iter().find(|t| !fsx::valid_slug(t)) {
-        return Err(format!("bad tag \"{}\": use a slug", fsx::clip(bad, 40)));
-    }
-    let mut seen_tags = Vec::new();
-    tags.retain(|tag| {
-        if seen_tags.contains(tag) {
-            false
-        } else {
-            seen_tags.push(tag.clone());
-            true
-        }
-    });
-    let notes_dir = store.notes_dir(agent)?;
-    let seq = crate::seq::alloc_seq(&store, agent)?;
-    let given = a.str("id").map(str::to_string);
-    let attempts: u32 = if given.is_some() { 1 } else { 999 };
-    for ntry in 1..=attempts {
-        let id = match &given {
-            Some(id) => id.clone(),
-            None => candidate_id(summary, ntry),
-        };
-        let path = fsx::join_id(&notes_dir, &id, 2)?.with_extension("md");
-        if let Some(dir) = path.parent() {
-            fsx::make_private_dir(dir)?;
-        }
-        fsx::refuse_special(&path)?;
-        let n = Note {
-            id: id.clone(),
-            kind: kind.to_string(),
-            status: a
-                .str("status")
-                .unwrap_or(if kind == "question" {
-                    "open"
-                } else {
-                    "resolved"
-                })
-                .to_string(),
-            summary: summary.to_string(),
-            agent: agent.to_string(),
-            created: fsx::now_iso(),
-            evidence: evidence.clone(),
-            tags: tags.clone(),
-            promoted: None,
-            seq: Some(seq),
-            superseded: false,
-            body: a.str("body").unwrap_or_default().to_string(),
-        };
-        match fsx::write_atomic(&path, n.render().as_bytes(), false) {
-            Ok(()) => {
-                return Ok(Value::obj(vec![
-                    ("id", Value::String(id)),
-                    ("kind", Value::str(kind)),
-                    ("status", Value::String(n.status)),
-                ]));
-            }
-            Err(e) if given.is_none() && e.contains("already exists") => continue,
-            Err(e) if e.contains("already exists") => {
-                return Err(format!(
-                    "note \"{id}\" already exists. Read it with libellus_get, or pass a new id."
-                ));
-            }
-            Err(e) => return Err(format!("note \"{id}\" not written: {e}")),
-        }
-    }
-    Err("could not find a free id; pass id".into())
-}
+const NOTE_FIELDS: &[Param] = &[
+    Param {
+        name: "kind",
+        kind: Kind::Str,
+        required: true,
+        doc: "What the note is.",
+        choices: note::KINDS,
+    },
+    Param {
+        name: "summary",
+        kind: Kind::Str,
+        required: true,
+        doc: "One line, up to 200 characters.",
+        choices: &[],
+    },
+    Param {
+        name: "body",
+        kind: Kind::Str,
+        required: false,
+        doc: "The detail, under about 300 words.",
+        choices: &[],
+    },
+    Param {
+        name: "id",
+        kind: Kind::Str,
+        required: false,
+        doc: "Slug, up to two segments. Made from the summary if absent.",
+        choices: &[],
+    },
+    Param {
+        name: "status",
+        kind: Kind::Str,
+        required: false,
+        doc: "open or resolved.",
+        choices: note::STATUSES,
+    },
+    Param {
+        name: "evidence",
+        kind: Kind::StrList,
+        required: false,
+        doc: "Pointers, each tool:reference.",
+        choices: &[],
+    },
+    Param {
+        name: "tags",
+        kind: Kind::StrList,
+        required: false,
+        doc: "Tag slugs.",
+        choices: &[],
+    },
+];
 
-fn candidate_id(summary: &str, n: u32) -> String {
-    let mut slug: String = summary
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    slug.truncate(48);
-    let slug = slug.trim_matches('-').to_string();
-    // A summary like "Con" must not become a Windows device name.
-    let slug = if slug.is_empty() {
-        "note".to_string()
-    } else if fsx::reserved_name(&slug) {
-        format!("{slug}-note")
-    } else {
-        slug
-    };
-    if n <= 1 {
-        slug
-    } else {
-        format!("{slug}-{n}")
-    }
-}
+const RESOLVE_FIELDS: &[Param] = &[
+    Param {
+        name: "id",
+        kind: Kind::Str,
+        required: true,
+        doc: "Note id.",
+        choices: &[],
+    },
+    Param {
+        name: "outcome",
+        kind: Kind::Str,
+        required: true,
+        doc: "One line, up to 200 characters.",
+        choices: &[],
+    },
+    Param {
+        name: "supersede",
+        kind: Kind::Bool,
+        required: false,
+        doc: "Mark the note replaced.",
+        choices: &[],
+    },
+];
+
+const ADD_FIELDS: &[Param] = &[
+    Param {
+        name: "title",
+        kind: Kind::Str,
+        required: true,
+        doc: "One line, up to 200 characters.",
+        choices: &[],
+    },
+    Param {
+        name: "id",
+        kind: Kind::Str,
+        required: false,
+        doc: "One slug. Made from the title if absent.",
+        choices: &[],
+    },
+    Param {
+        name: "parent",
+        kind: Kind::Str,
+        required: false,
+        doc: "Parent task id. Omit for a new project.",
+        choices: &[],
+    },
+    Param {
+        name: "owner",
+        kind: Kind::Str,
+        required: false,
+        doc: "Agent name that does it (sub-2). Default: you.",
+        choices: &[],
+    },
+    Param {
+        name: "status",
+        kind: Kind::Str,
+        required: false,
+        doc: "Default todo.",
+        choices: crate::board::STATUSES,
+    },
+];
+
+const SET_FIELDS: &[Param] = &[
+    Param { name: "id", kind: Kind::Str, required: true, doc: "Task id.", choices: &[] },
+    Param { name: "status", kind: Kind::Str, required: false, doc: "New status.", choices: crate::board::STATUSES },
+    Param { name: "title", kind: Kind::Str, required: false, doc: "New title.", choices: &[] },
+    Param { name: "parent", kind: Kind::Str, required: false, doc: "Move under this task; empty string makes it a project.", choices: &[] },
+    Param { name: "owner", kind: Kind::Str, required: false, doc: "Hand it to this agent.", choices: &[] },
+    Param { name: "outcome", kind: Kind::Str, required: false, doc: "One line: what came of it. Empty string clears it.", choices: &[] },
+    Param { name: "evidence", kind: Kind::StrList, required: false, doc: "Pointers, each tool:reference (adsertio:claim-7, trammel:plan-3/step-2). Replaces the list.", choices: &[] },
+];
+
+const OP_FIELDS: &[Param] = &[
+    Param {
+        name: "add",
+        kind: Kind::Object(ADD_FIELDS),
+        required: false,
+        doc: "Add a task.",
+        choices: &[],
+    },
+    Param {
+        name: "set",
+        kind: Kind::Object(SET_FIELDS),
+        required: false,
+        doc: "Change a task.",
+        choices: &[],
+    },
+    Param {
+        name: "remove",
+        kind: Kind::Str,
+        required: false,
+        doc: "Delete a todo task with no children (a mistake). Use set status dropped otherwise.",
+        choices: &[],
+    },
+];
 
 fn note_get(a: &Args) -> Result<Value, String> {
     let store = Store::open()?;
@@ -279,39 +352,8 @@ fn note_get(a: &Args) -> Result<Value, String> {
     Ok(note_full(&note::load_one(&store, agent, id)?))
 }
 
-fn note_resolve(a: &Args) -> Result<Value, String> {
-    let store = Store::open()?;
-    let agent = a.str("agent").unwrap_or_default();
-    let id = a.str("id").unwrap_or_default();
-    let outcome = a.str("outcome").unwrap_or_default();
-    note::validate_outcome(outcome)?;
-    let path = note::note_path(&store, agent, id)?;
-    let _lock = if path.parent().is_some_and(|parent| parent.is_dir()) {
-        Some(fsx::Lock::acquire(&path)?)
-    } else {
-        None
-    };
-    let mut note = note::load_one(&store, agent, id)?;
-    let supersede = a.bool("supersede").unwrap_or(false) || note::marks_replaced(outcome);
-    if note.status == "resolved" && !supersede {
-        return Err(format!(
-            "note \"{id}\" is already resolved. The file was not changed. Read it with libellus_get. To mark it replaced, pass supersede or an outcome that starts with SUPERSEDED: or REVERSED:."
-        ));
-    }
-    note.status = "resolved".to_string();
-    if supersede {
-        note.superseded = true;
-    }
-    let body = note::append_outcome(&note.body, outcome);
-    note.body = body;
-    let path = note::note_path(&store, agent, id)?;
-    fsx::write_atomic(&path, note.render().as_bytes(), true)
-        .map_err(|e| format!("note \"{id}\" not updated: {e}"))?;
-    Ok(note_full(&note))
-}
-
 /// Every field of one note. The body is not cut: this is a single note, not a list.
-fn note_full(n: &Note) -> Value {
+pub fn note_full(n: &Note) -> Value {
     let mut p = vec![
         ("id", Value::str(&n.id)),
         ("kind", Value::str(&n.kind)),

@@ -94,6 +94,35 @@ pub fn run(a: &Args) -> Result<Value, String> {
         }
     }
     text.push('\n');
+    let board_on = crate::groups::enabled(
+        crate::tools::TOOLS,
+        "libellus",
+        crate::tools::GROUPS,
+        Some(&store.project),
+    )
+    .tools
+    .iter()
+    .any(|t| t.group == "board");
+    let mut board_value = None;
+    let mut board_error = None;
+    let mut board_open_mine = 0;
+    if board_on {
+        match crate::board::load(&store) {
+            Ok(live) => {
+                let archived = crate::board_view::archived_count(&store);
+                let sec = crate::board_view::section(&live, archived, agent, max);
+                text.push_str(&sec.text);
+                text.push('\n');
+                truncated |= sec.truncated;
+                board_open_mine = sec.open_mine;
+                board_value = Some(sec.value);
+            }
+            Err(e) => {
+                text.push_str(&format!("## Board\n- cannot read the board: {e}\n\n"));
+                board_error = Some(e);
+            }
+        }
+    }
     if open_total > open.len() {
         text.push_str(&format!(
             "## Open questions ({open_total}, showing {})\n",
@@ -175,6 +204,9 @@ pub fn run(a: &Args) -> Result<Value, String> {
     }
 
     let mut next_bits = Vec::new();
+    if board_open_mine > 0 {
+        next_bits.push("tick off a task with libellus_plan");
+    }
     if !open.is_empty() {
         next_bits.push("resolve an open question with libellus_resolve");
     }
@@ -233,6 +265,12 @@ pub fn run(a: &Args) -> Result<Value, String> {
         ("truncated".to_string(), Value::Bool(truncated)),
         ("text".to_string(), Value::String(text)),
     ];
+    if let Some(b) = board_value {
+        pairs.push(("board".to_string(), b));
+    }
+    if let Some(e) = board_error {
+        pairs.push(("board_error".to_string(), Value::String(e)));
+    }
     if let Some(err) = ledger_error {
         pairs.push(("ledger_error".to_string(), Value::String(err)));
     }

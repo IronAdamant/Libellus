@@ -123,6 +123,55 @@ fn run() -> Result<(), String> {
     ));
     sizes.push(store_size(&store, 10_000, true)?);
 
+    eprint!("board to 5000 tasks ... ");
+    let plan = tool("libellus_plan")?;
+    let board = tool("libellus_board")?;
+    let mut grow = Vec::new();
+    for p in 0..25 {
+        let mut text = format!("- [ ] Project {p}\n");
+        for t in 0..199 {
+            text.push_str(&format!("  - [ ] Task {p} {t}\n"));
+        }
+        let args = Value::obj(vec![
+            ("agent", Value::str("bench")),
+            ("outline", Value::String(text)),
+        ]);
+        let start = Instant::now();
+        run_tool(plan, &args)?;
+        grow.push(start.elapsed().as_micros());
+    }
+    eprintln!("done");
+    rows.push(Row::from_us(
+        "plan outline of 200 tasks, board growing to 5000",
+        grow,
+    ));
+    let mut ticks = Vec::new();
+    for t in 0..10 {
+        let ops = json_ops(&format!("task-0-{t}"));
+        let start = Instant::now();
+        run_tool(plan, &ops)?;
+        ticks.push(start.elapsed().as_micros());
+    }
+    rows.push(Row::from_us(
+        "plan tick one task at 5000 tasks (page regenerated)",
+        ticks,
+    ));
+    rows.push(Row::from_us(
+        "board read at 5000 tasks, project filter",
+        time_tool(
+            board,
+            &Value::obj(vec![
+                ("agent", Value::str("bench")),
+                ("project", Value::str("project-1")),
+            ]),
+            10,
+        )?,
+    ));
+    rows.push(Row::from_us(
+        "brief at 10000 notes and 5000 board tasks",
+        time_tool(brief, &brief_args(), 8)?,
+    ));
+
     eprint!("cli and mcp ... ");
     rows.push(Row::from_us(
         "CLI cold start, libellus --version",
@@ -290,6 +339,19 @@ fn seed_ledger(store: &Path, n: usize) -> Result<(), String> {
         return Err(format!("seeded ledger has {count} entries, wanted {n}"));
     }
     Ok(())
+}
+
+fn json_ops(id: &str) -> Value {
+    Value::obj(vec![
+        ("agent", Value::str("bench")),
+        (
+            "ops",
+            Value::Array(vec![Value::obj(vec![(
+                "set",
+                Value::obj(vec![("id", Value::str(id)), ("status", Value::str("done"))]),
+            )])]),
+        ),
+    ])
 }
 
 fn ls_args(limit: u64) -> Value {

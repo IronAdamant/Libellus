@@ -2,16 +2,22 @@
 
 Libellus is a private notepad and number ledger per agent. The files are the
 product. The CLI and the MCP server are conveniences over them, and any agent
-that can read and write files can use the store without either. Libellus 1.2.0
-reads stores written by 1.0.0 and 1.1.2. Notes it writes add `seq`. A 1.1.2
-binary rejects that key.
+that can read and write files can use the store without either. Libellus 1.3.0
+reads notes and ledgers written by 1.0.0 to 1.2.2, and adds the board
+(section 5). Notes written since 1.2.0 have `seq`; a 1.1.2 binary rejects that
+key. An older binary ignores `board/` and `board.html`.
 
 ## 1. Layout
 
 ```
 .libellus/
   agents/<agent>/notes/<id>.md       notes; <id> is one or two slug segments
+  agents/<agent>/seq                 the note counter
   agents/<agent>/ledger.jsonl        the number ledger
+  board/<id>.md                      board tasks, shared by every agent
+  board/seq                          the board counter
+  board/archive/<project>/<id>.md    closed projects
+  board.html                         the read-only page for people
 ```
 
 - The store is the nearest `.libellus/` walking up from the working directory,
@@ -217,7 +223,185 @@ If the Relatum write succeeded and this update fails, the error names both
 paths. A second promote of a note that already has `promoted` is an error
 naming that id, and it does not write another Relatum file.
 
-## 5. MCP tools
+## 5. Board
+
+Notes are private per agent. The board is the one deliberate shared part of
+the store: a tree of tasks that every agent in the store reads and changes.
+A main agent plans a project and assigns subtrees to sub-agents (`owner`);
+each agent ticks off its own tasks; parents close by themselves. Trammel
+plans code changes in dependency order and verifies them. The board is the
+agents' own working task list.
+
+### Task files
+
+One file per task, `board/<id>.md`. `<id>` is one slug (not a Windows device
+name), unique on the live board. A task has no body.
+
+```markdown
+---
+title: Write the docs
+status: doing
+parent: release-1-3
+owner: sub-2
+created: 2026-11-26T01:00:00Z
+updated: 2026-11-26T02:10:00Z
+updated_by: sub-2
+seq: 14
+outcome: README and SPEC done
+evidence: [adsertio:claim-7, trammel:plan-3/step-2]
+---
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `title` | yes | One line, up to 200 characters, no leading or trailing space |
+| `status` | yes | `todo`, `doing`, `blocked`, `done` or `dropped`. The first three are open |
+| `parent` | yes | A task id, or empty for a top-level project |
+| `owner` | yes | The agent that does it |
+| `created`, `updated` | yes | UTC, `YYYY-MM-DDTHH:MM:SSZ` |
+| `updated_by` | yes | The agent that made the last change |
+| `seq` | yes | Creation order from `board/seq`. Siblings are listed by it |
+| `closed`, `closed_by` | when closed | Set exactly when the status is `done` or `dropped`. `closed_by` is an agent, or `children` |
+| `outcome` | no | One line, like a resolve outcome |
+| `evidence` | no | Pointers, `tool:reference`, as in notes |
+
+Parsing is as strict as a note: an unknown or repeated key, a bad value, a
+missing field, an open status with `closed` set, or text after the
+frontmatter is an error naming the file. A task file over 64 KiB is an
+error. `children` cannot be an owner or a writer. The tree is at most 6
+levels deep (a project is level 1). A parent loop or a deeper chain, which
+only a hand edit makes, is an error. A task whose parent is missing (a write
+cut short) is shown as a top-level task, and `check` names it. The counter
+follows the note counter: under the board lock, a missing `board/seq`
+starts at the highest `seq` on the board, and a damaged one is an error.
+
+### Rules
+
+- A task cannot be `done` while it has an open child. The error names the
+  open children.
+- Dropping a task drops its open descendants (`closed_by` is the agent).
+  Its done descendants stay done.
+- Closing: when a task becomes done or dropped, or is removed or moved away,
+  and every child of its parent is done or dropped with at least one done,
+  the parent becomes `done` with `closed_by: children`. This repeats up to
+  the project. All children dropped closes nothing.
+- Reopening: an open task (set back to todo, doing or blocked, added, or
+  moved) under a parent with `closed_by: children` reopens that parent as
+  `doing`, and so on up. A parent closed by an agent is not reopened: that
+  call is an error and says to reopen the parent first.
+- Archive: when a project (a top-level task) closes, its whole subtree moves
+  to `board/archive/<project>/`, or `<project>-2` and so on when that
+  folder is taken. Archived tasks keep their files for history and the
+  page. They are never in the brief, cannot be changed, and their ids can
+  be used again on the live board.
+- Any agent may change any task. `updated_by` records who.
+
+### libellus_plan
+
+`{agent, ops?, outline?, parent?}`. `ops` is up to 100 operations, applied
+in order:
+
+```json
+{"add": {"title": "Write docs", "id": "docs", "parent": "rel", "owner": "sub-2", "status": "todo"}}
+{"set": {"id": "docs", "status": "done", "title": "...", "parent": "", "owner": "main", "outcome": "...", "evidence": ["adsertio:claim-7"]}}
+{"remove": "typo-task"}
+```
+
+`add` needs `title`. Without `id`, the id is made from the title, with
+`-2`, `-3` and so on when taken. `owner` defaults to the caller, `status` to
+`todo`. `set` needs `id` and at least one other field. `parent: ""` makes a
+task a project; a move may not put a task under itself or past depth 6. An
+empty `outcome` clears it; `evidence` replaces the list. `remove` is only
+for a `todo` task with no children (a mistake); otherwise set `dropped`.
+Each op has exactly one of `add`, `set`, `remove`.
+
+`outline` adds a tree in one call, after the ops. With `parent`, its top
+lines go under that task; otherwise they are new projects. Grammar:
+
+```text
+outline = line *( "\n" line )
+line    = blank / indent "- [" box "] " title
+indent  = *( "  " ) / *( "\t" )      ; one level per two spaces or per tab
+box     = " " / "x" / "~" / "!" / "-"  ; todo, done, doing, blocked, dropped
+```
+
+Blank lines are skipped and CRLF is read as LF. The first line is not
+indented, and a line is at most one level below the line above. Anything
+else is an error naming the line: an odd number of spaces, tabs and spaces
+mixed, any other box (`[X]` too), another bullet, no space after the box,
+an empty or over-long title, or a seventh level. An outline creates at most
+200 tasks. An `[x]` parent with an open child is an error.
+
+The call takes the board lock, reads the board, applies every op to a copy
+in memory, settles reopening, checks that no closed task has an open child,
+settles closing, and only then writes. Any error means no file changes, and
+the error names the op (`ops[3] (set "x")`) or outline line. Writes are new
+and changed task files (`overwrite = false` for a new task), then removed
+files, then archive moves (renames). A kill during the writes can leave some
+written: each file is whole, `check` names what is out of step (an open
+child under a closed parent, a closed project still on the live board, an
+orphan), and the next `plan` call archives a closed project left behind.
+
+The reply lists only what changed: `added` (ids, in order, so an outline's
+ids are known), `updated`, `removed`, `closed_by_children`, `reopened`,
+`dropped`, `archived` (`{project, folder}`), `files_written`, and `html` (the
+page path) or `html_error`. A failed page write does not undo the board
+write.
+
+Locking: one board lock, `board/.board.lock`, the same create-exclusive
+`fsx::Lock` as notes, held from the read to the last write and the page. Not
+a lock per task: an op reaches ancestors (closing and reopening), descendants
+(dropping) and whole projects (archive), and which tasks those are is only
+known after the read. One lock makes read, check and write one step, so two
+agents ticking the last two children at once close the parent exactly once
+and lose no update. Board writes queue for milliseconds. Reads take no lock;
+every file is replaced whole, so a reader sees each task before or after a
+change.
+
+### libellus_board
+
+`{agent, owner?, project?, open_only?, include_archived?}` returns `text`,
+the tree as checkbox markdown (`- [~] id: title`, two spaces per level,
+` @owner` when the owner is not the caller, ` -> outcome` when set),
+`counts` per status for the live board, and `shown`. `open_only` defaults
+to true. `owner` keeps that agent's tasks and their parents. `project` keeps
+one project; a project that is not live is an error unless
+`include_archived` is set, which appends each archived project as
+`archived <folder>:` and its tree. `text` is cut at 16 KiB on a line
+boundary and says so.
+
+### In the brief
+
+`## Board` comes after `## Current state`. It lists the caller's open tasks
+that have no open children (a parent with open children closes by itself),
+`doing` first, then `blocked`, then `todo`, each as
+`- [~] project > task > sub: Title`, capped by `max_items`, then one line of
+counts for the whole board and the number of archived projects. The JSON
+has `board` (`tasks`, `open_mine`, `counts`, `archived_projects`). A board
+that cannot be read sets `board_error` and keeps the notes. With the `board`
+group off, the section is left out.
+
+### board.html
+
+After every board write, under the board lock, `.libellus/board.html` is
+written again (atomically). `libellus board --html [--out PATH]` writes it on
+demand. One file, inline CSS, no scripts, no links to anything outside it:
+it works offline, needs no JavaScript (collapsing is `<details>`), follows
+`prefers-color-scheme` and fits a phone. It has a banner saying the page is
+read-only and how to ask for a change ("ask your agent, for example: review
+task <id>"), each project's progress (done/total), a kanban of `todo`,
+`doing`, `blocked` and `done` with dropped tasks collapsed below, the tree
+with disabled checkboxes, each agent's open questions (id and summary only),
+archived projects collapsed at the bottom, and the generation time and store
+path in the footer. Each task shows id, title, owner, status, updated time
+and writer, outcome and evidence. Every value is HTML-escaped (`&`, `<`,
+`>`, `"`, `'`).
+
+Cost: every board read is O(tasks): each file is read once (in parallel
+above 128 files) and the tree is one index. A write also reads the archive
+and every agent's notes for the page.
+
+## 6. MCP tools
 
 All arguments are checked against the tool's schema. Unknown arguments, wrong
 types, missing required arguments and values outside an `enum` are errors with
@@ -225,9 +409,21 @@ types, missing required arguments and values outside an `enum` are errors with
 
 - `libellus_note` `{agent, kind, summary, body?, id?, status?, evidence?, tags?}`
   returns `{id, kind, status}`. Without `id`, one is made from the summary.
+  Or `{agent, notes}`: up to 50 notes, each `{kind, summary, body?, id?,
+  status?, evidence?, tags?}`, never mixed with the single-note fields. The
+  whole batch is checked first (fields, a taken id, an id twice in the
+  batch); any bad item means nothing is written, and the error names every
+  bad item (`notes[2]: ...`). Then the notes are written in order with
+  `overwrite = false` and `seq` numbers taken in one locked step. A write
+  that fails part way stops the batch and the error names the notes already
+  written. The reply is `{written, ids}`.
 - `libellus_get` `{agent, id}` returns the note, including `body`, `evidence`
   and `tags`. Missing, corrupt, a symlink, or a mismatched `agent` is an error.
 - `libellus_resolve` `{agent, id, outcome, supersede?}` returns the updated note.
+  Or `{agent, items}`: up to 50 `{id, outcome, supersede?}`, checked whole
+  first (a missing note, an already resolved note without supersede, an id
+  twice), then resolved in order, each under its own lock. The reply is
+  `{resolved, notes: [{id, status, superseded?}]}`.
   `supersede`, or an outcome that starts with `SUPERSEDED:` or `REVERSED:`,
   sets `superseded` and is allowed when the note is already resolved.
 - `libellus_ls` `{agent, kind?, status?, limit?, offset?, before_id?, bodies?}`
@@ -247,7 +443,7 @@ types, missing required arguments and values outside an `enum` are errors with
   `before_id` for the next older page, also on a page reached with
   `before_id`. Prefer `next_before_id` for the next call. `total` is the
   count that matches `kind` and `status`.
-- `libellus_brief` `{agent, max_items?}` returns `open_questions`,
+- `libellus_brief` `{agent, max_items?}` returns `board` (section 5), `open_questions`,
   `open_questions_total`, `recent_decisions`, `replaced_decisions`,
   `dead_ends`, `recent_findings`, `context`, `costs`, `truncated` and `text`.
   `max_items` (default 5, at most 50) caps every section, including open
@@ -279,6 +475,18 @@ types, missing required arguments and values outside an `enum` are errors with
   ESRCH is dead. `ps` is not run. On Windows a pid cannot be checked and a
   lock is judged by its age. The success JSON lists
   `removed`.
+  `check` also reads the board and its archive (section 5).
+- `libellus_doctor` `{fix?}` returns `{ok, checks: [{name, ok, detail,
+  fix}]}`: `version` (and platform), `agent` (`LIBELLUS_AGENT`), `store`
+  (where, and whether `LIBELLUS_DIR` chose it), `writable` (a probe file
+  made and removed with `write_atomic`), `stray_files` (stale locks and temp
+  files from a dead process), `store_files` (the `check` scan, read-only),
+  `tool_groups` (the AGENTS.md line or the environment variables),
+  `mcp_binary` (`libellus-mcp` next to the binary), `relatum` (the promote
+  store; none found is ok and says so) and, on Windows, `path_length` (the
+  store path plus about 100 characters, against the 260 limit). Each
+  failing check has a `fix`. `fix: true` removes only stale locks and
+  abandoned temp files, as `check` does. The CLI exits 1 when `ok` is false.
 - `libellus_promote` `{agent, id, scope}` returns `{id, promoted, relatum_kind, path}`.
 - `libellus_spend` `{agent, task, step?, model?, tokens_in?, tokens_out?,
   cost_micro_usd?, note?}` (at least one number) returns the task and agent
@@ -286,18 +494,28 @@ types, missing required arguments and values outside an `enum` are errors with
 - `libellus_ledger` `{agent?, task?, step?}` returns the totals described above.
 - `libellus_archive` `{agent}` moves that agent's ledger into `archive/` and
   starts a fresh file. It is in the ledger group.
+- `libellus_plan` and `libellus_board`: section 5. They are the board group.
+
+A batch argument (`notes`, `items`, `ops`) is a JSON array of objects whose
+keys are checked like top-level arguments: an unknown key, a wrong type, a
+missing required key or a value outside an `enum` is an error naming the
+item. The schema gives each item's properties and `maxItems`. On the CLI it
+is `--notes '<json>'` or `--notes-file PATH` (also `--items-file`,
+`--ops-file` and `--outline-file`); the file is at most 4 MiB.
 
 `LIBELLUS_AGENT`, when set and non-empty, fills a required `agent` that the
 caller omitted. An explicit `agent` wins.
 
-Groups: `core` (note, get, resolve, ls, brief, promote, check) is always on; `ledger`
-(spend, ledger, archive) can be switched off. A hidden tool's call returns `isError`.
+Groups: `core` (note, get, resolve, ls, brief, promote, check, doctor) is
+always on; `ledger` (spend, ledger, archive) and `board` (plan, board) can be
+switched off. A hidden tool's call returns `isError`.
 
 The choice is one line in the project's AGENTS.md `agent-tools` block:
 
 ```text
 libellus: disable ledger
 libellus: tools core, ledger
+libellus: disable board
 ```
 
 If `LIBELLUS_TOOLS` or `LIBELLUS_DISABLE` is set to a non-empty value, that
@@ -310,19 +528,46 @@ an AGENTS.md. An unknown group, an empty list, or disabling `core` falls
 back to the core tools only and says why in `initialize` and in `tools/list`.
 
 `libellus hook` is a CLI command, not an MCP tool. It prints a snippet whose
-job is to run `libellus brief --agent NAME` at session start and after
-compaction. `--host` is `generic` (the default), `claude`, or `cursor`. The
-claude snippet is a SessionStart hook whose plain stdout is added to the
-session, including after compaction (`compact`). The cursor snippet is a
-sessionStart hook that prints `additional_context`. Cursor's preCompact hook
-cannot put text back into the model. `hook` reads its flags with the same
-rules as every other command: `--name=value` works, and a flag given twice
-is an error.
+job is to put the brief into the session at start and after compaction.
+`--host` is `generic` (the default), `claude`, or `cursor`. `generic` prints
+`libellus brief --agent NAME`. The cursor snippet is a sessionStart hook that
+prints `additional_context`; Cursor's preCompact hook cannot put text back
+into the model. `hook` reads its flags with the same rules as every other
+command: `--name=value` works, and a flag given twice is an error.
+
+The claude snippet has two Claude Code hooks, both in exec form (`command`
+plus an `args` array), so no shell parses them and they run the same under
+cmd, PowerShell and Git Bash:
+
+- `SessionStart`, matcher `startup|resume|compact`, runs
+  `libellus hook-run session-start --agent NAME`, which prints
+  `{"hookSpecificOutput": {"hookEventName": "SessionStart",
+  "additionalContext": <brief text>}}`.
+- `SubagentStart` runs `libellus hook-run subagent-start`. It reads the hook
+  JSON on stdin (at most 1 MiB), takes `agent_type` and `agent_id`, and
+  names the sub-agent `<agent_type>-<id>`: the type made a slug (at most 40
+  characters, `sub` when empty) and the last 8 letters and digits of
+  `agent_id` after any `agent-` prefix, lowercased (`Explore` and
+  `agent-abc123` give `explore-abc123`). It prints the same JSON with
+  `"hookEventName": "SubagentStart"` and a context that starts with one line
+  telling the sub-agent its Libellus name, to pass it as `agent`, and that
+  its tasks are on the board, followed by that agent's brief. If the prompt
+  that started the sub-agent names another Libellus agent (`sub-2`), the
+  sub-agent uses that name and calls `libellus_brief` with it.
+
+`hook-run` always exits 0 so a bad store or input never stops a session:
+on malformed stdin, a missing agent or a store error it prints nothing on
+stdout and one line on stderr. There is no SubagentStop hook: its output
+does not reach the parent agent.
+
+`libellus doctor [--fix]` prints the doctor JSON and exits 1 when a check
+fails. `libellus board --html [--out PATH]` writes the page and takes no
+other flag.
 
 `init`, `check`, `mcp`, `serve-mcp`, `help` and `--version` take no arguments.
 An extra argument is a usage error (exit 2).
 
-## 6. Protocol behaviour
+## 7. Protocol behaviour
 
 Newline-delimited JSON-RPC 2.0 on stdio.
 
@@ -340,10 +585,12 @@ Newline-delimited JSON-RPC 2.0 on stdio.
 | A tool failure | a result with `isError: true` |
 | A tool that panics | a result with `isError: true`; the server continues |
 
-## 7. Not in this tree
+## 8. Not in this tree
 
 A `v*` tag runs `.github/workflows/release.yml`, which publishes GitHub
 release archives and SHA256SUMS. npm packages and an MCP Registry entry are
-not part of this repository. Libellus does not price models, does not read
-another agent's notes (that is Relatum, after promote), and does not resolve
-an `adsertio:` pointer.
+not part of this repository. Libellus does not price models, gives an agent
+no tool to read another agent's notes (that is Relatum, after promote; only
+the people's page lists each agent's open questions), and does not resolve
+an `adsertio:` pointer. The page is read-only: there is no server and no
+form.

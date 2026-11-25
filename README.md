@@ -17,6 +17,10 @@ cost it reports. Notes can point at proof elsewhere (`tool:reference`) rather
 than copying it. Sharing a note with other agents is a deliberate step into
 [Relatum](https://github.com/IronAdamant/Relatum), not the default.
 
+The one shared part is the **board**: a tree of tasks that a main agent and
+its sub-agents keep together, so the plan survives compaction and finished
+work tidies itself away. People read it as a page; agents change it.
+
 What it deliberately does not do:
 
 - **Call a model.** The agent reports its tokens and cost; Libellus only adds
@@ -25,8 +29,10 @@ What it deliberately does not do:
   the same computer account can read the files.
 - **Do other tools' jobs.** Shared swarm notes are
   [Relatum](https://github.com/IronAdamant/Relatum), code memory is
-  Stele-Context, per-file change notes are Wikifier, plans are
-  [Trammel](https://github.com/IronAdamant/Trammel), live locks are
+  Stele-Context, per-file change notes are Wikifier, plans of code changes
+  in dependency order, with verification, are
+  [Trammel](https://github.com/IronAdamant/Trammel) (the board is the
+  agents' own working task list, not that), live locks are
   CoordinationHub, and checking claims is
   [Adsertio](https://github.com/IronAdamant/Adsertio).
 
@@ -71,6 +77,14 @@ libellus note --agent main --kind question --summary "Does retry apply to POST?"
 libellus resolve --agent main --id does-retry-apply-to-post --outcome "No, GET only."
 libellus get --agent main --id does-retry-apply-to-post
 
+# Several notes in one call (an agent pays one turn, not one per note).
+libellus note --agent main --notes-file notes.json
+
+# Plan work on the shared board, then tick it off.
+libellus plan --agent main --outline-file plan.md
+libellus plan --agent main --ops '[{"set":{"id":"home-page","status":"done"}}]'
+libellus board --agent main
+
 # Record what a step cost, and see the totals.
 libellus spend --agent main --task retry --tokens_in 100 --tokens_out 20 --cost_micro_usd 1000
 libellus ledger --agent main
@@ -92,6 +106,11 @@ The brief is plain text, short enough to paste straight back in:
 ## Current state
 - retry-wrapper-...: Retry wrapper is in src/http.rs; GET is done, POST next
 
+## Board
+- [~] relaunch > copy > about-page: About page
+- [ ] relaunch > build > retry-post: Retry POST requests
+- board: 4 todo, 2 doing, 0 blocked, 3 done, 0 dropped, 1 archived projects
+
 ## Open questions (1)
 - does-retry-apply-to-put: Does retry apply to PUT?
 
@@ -105,7 +124,7 @@ The brief is plain text, short enough to paste straight back in:
 - total: 12000 in, 3000 out tokens, 45000 micro-USD (1 ledger entry)
 - retry: 12000 in, 3000 out, 45000 micro-USD
 
-Next: resolve an open question with libellus_resolve; share a note with libellus_promote.
+Next: tick off a task with libellus_plan; resolve an open question with libellus_resolve; share a note with libellus_promote.
 ```
 
 Each section is capped (5 items by default, `--max_items` up to 50), newest
@@ -128,6 +147,50 @@ resolved. To mark a decision as replaced, resolve it with `--supersede`, or
 with an outcome that starts `SUPERSEDED:` or `REVERSED:`. Evidence is a
 pointer such as `trammel:plan-3/step-2`, not a copy of the proof.
 
+### The board
+
+Notes are private. The board is shared by every agent in the store: one
+file per task under `.libellus/board/`. The pattern is:
+
+1. The main agent plans a project as a tree and hands subtrees to
+   sub-agents by setting `owner` (`sub-2`).
+2. Each sub-agent calls `libellus_brief` with its own agent name. Its open
+   tasks are in the brief, with their place in the tree.
+3. Each agent ticks off its tasks, several in one `libellus_plan` call.
+4. When every child of a task is done or dropped (at least one done), the
+   parent closes by itself, and so on up. When a project closes, it moves
+   to `.libellus/board/archive/` and leaves the brief, so finished work does
+   not pile up.
+
+A plan can be an outline, a markdown checkbox list:
+
+```markdown
+- [ ] Relaunch
+  - [ ] Copy
+    - [x] Home page
+    - [~] About page
+  - [ ] Build
+    - [ ] Retry POST requests
+    - [!] Payment form
+```
+
+`[ ]` todo, `[~]` doing, `[!]` blocked, `[x]` done, `[-]` dropped; two
+spaces or a tab per level, at most six levels. Ids come from the titles
+(`about-page`) and are returned. A mistake in a line is an error naming the
+line, and nothing is written.
+
+The rules: a task cannot be done while a child is open; dropping a task
+drops its open children; reopening a child reopens the parents that closed
+by themselves; `remove` is only for a todo task added by mistake.
+Any agent may change any task, and `updated_by` says who did.
+
+After every board change, Libellus writes `.libellus/board.html`, a
+read-only page for people: a kanban (todo, doing, blocked, done), the tree,
+each project's progress, every agent's open questions, and archived
+projects. It is one file with no scripts, works offline, and follows the
+light or dark setting. People do not edit it; they ask an agent ("review
+task about-page"). `libellus board --html --out board.html` writes a copy.
+
 ### Where the files live
 
 The store is the nearest `.libellus/` folder, walking up from the current
@@ -141,6 +204,10 @@ directory, or the folder named by `$LIBELLUS_DIR`.
   agents/main/ledger.meta         totals cache, rebuilt from the ledger
   agents/main/archive/            old ledgers moved aside by archive
   agents/sub-2/...
+  board/about-page.md             one board task
+  board/seq                       the board counter
+  board/archive/relaunch/         a closed project, kept for history
+  board.html                      the read-only page
 ```
 
 The ledger only grows. When it gets large, `libellus archive --agent main`
@@ -167,16 +234,24 @@ project.
 
 | Tool | Group | Does |
 |---|---|---|
-| `libellus_note` | core | Write a note. Never overwrites an existing one. |
+| `libellus_note` | core | Write a note, or up to 50 in one call (`notes`). Never overwrites an existing one. |
 | `libellus_get` | core | Read one note, including its body. |
-| `libellus_resolve` | core | Mark a note resolved and add a one-line outcome. `supersede` marks it replaced. |
+| `libellus_resolve` | core | Mark a note resolved with a one-line outcome, or up to 50 (`items`). `supersede` marks it replaced. |
 | `libellus_ls` | core | List your notes. Page with `before_id`: pass back `next_before_id`. |
-| `libellus_brief` | core | The compaction brief. Still returns the notes if the ledger cannot be read. |
-| `libellus_check` | core | Read every note and ledger, and fail on damage. Clears locks and temp files left by a writer that is gone. |
+| `libellus_brief` | core | The compaction brief, with your open board tasks. Still returns the notes if the ledger or board cannot be read. |
+| `libellus_check` | core | Read every note, ledger and board file, and fail on damage. Clears locks and temp files left by a writer that is gone. |
+| `libellus_doctor` | core | Diagnose the setup; each failing check says how to fix it. |
 | `libellus_promote` | core | Copy a note into Relatum and record its Relatum id. |
 | `libellus_spend` | ledger | Record tokens and cost for a step. Refuses once the ledger would pass 32 MiB. |
 | `libellus_ledger` | ledger | Totals, by task, by step, or across every agent. |
 | `libellus_archive` | ledger | Move the ledger into `archive/` and start a fresh one. |
+| `libellus_plan` | board | Change the board: up to 100 add, set and remove ops, or an outline, in one call. All or nothing. |
+| `libellus_board` | board | The board as a checkbox tree, with counts. Filter by owner or project. |
+
+A batch is checked whole before anything is written: one bad item writes
+nothing, and the error names every bad item. On the command line a batch is
+`--notes '<json>'` or `--notes-file PATH` (likewise `--items`, `--ops`,
+`--outline`).
 
 Each tool is also a CLI command without the `libellus_` prefix.
 
@@ -188,14 +263,26 @@ session and after compaction:
 
 | Host | What the snippet does |
 |---|---|
-| `claude` | A Claude Code `SessionStart` hook for `.claude/settings.json`. Its matcher includes `compact`, so it also runs after compaction, and the brief is added to the session. |
+| `claude` | Claude Code hooks for `.claude/settings.json`. `SessionStart` (startup, resume, compact) puts the brief into the session. `SubagentStart` gives each sub-agent a Libellus name, `<agent_type>-<8 characters of agent_id>` (for example `explore-abc123`), and that agent's brief before its first prompt. Both use the exec form (`command` plus `args`), so there is no shell syntax and the same text works on Windows. |
 | `cursor` | A Cursor `sessionStart` hook for `.cursor/hooks.json`. Cursor has no hook that can put text back after compaction, so after compacting, run the brief again (or call `libellus_brief`) and paste it in. |
 | `generic` | Just the command, `libellus brief --agent NAME`, for any other host. |
+
+Without the SubagentStart hook, tell each sub-agent its Libellus name in its
+prompt ("you are Libellus agent sub-2; call libellus_brief with agent sub-2
+first") and assign its board tasks to that name. A sub-agent whose prompt
+names an agent uses that name, even when the hook gave it another.
+
+`libellus doctor` checks the setup (store, environment variables, write
+access, damaged files, stale locks, the AGENTS.md groups line, `libellus-mcp`
+beside the binary, Relatum) and exits 1 with a fix for each failing check.
+`libellus doctor --fix` only clears locks and temp files left by a process
+that is gone.
 
 ### Tool groups
 
 The `core` tools are always on. The `ledger` tools (`libellus_spend`,
-`libellus_ledger`, `libellus_archive`) can be switched off with one line in
+`libellus_ledger`, `libellus_archive`) and the `board` tools
+(`libellus_plan`, `libellus_board`) can be switched off with one line in
 the `agent-tools` block of the project's AGENTS.md:
 
 ````markdown
@@ -204,7 +291,8 @@ libellus: disable ledger
 ```
 ````
 
-Or list what you want: `libellus: tools core, ledger`. The environment
+Or list what you want: `libellus: tools core, ledger`, or
+`libellus: disable board`. The environment
 variables `LIBELLUS_TOOLS` and `LIBELLUS_DISABLE` override that line. Case
 is ignored. The line is read even before `libellus init`, from the nearest
 AGENTS.md above the working folder. The server rereads the choice on every
@@ -229,9 +317,15 @@ is covered by tests in `tests/`:
   never overwrites another, and resolve and promote replace only that note's
   own file.
 - **Safe with several writers.** Resolve, promote, spend, archive and the note
-  counter each take a lock. If a writer is killed, exactly one later writer
-  takes over its lock, so two notes never share a number and a resolve is
-  never lost.
+  counter each take a lock, and every board change takes the one board lock
+  from reading to writing, so two agents ticking the last two children at
+  once close the parent exactly once. If a writer is killed, exactly one
+  later writer takes over its lock, so two notes never share a number and a
+  resolve is never lost.
+- **All or nothing.** A batch of notes, resolves or board ops is checked
+  whole first; one bad item writes nothing.
+- **The page cannot be abused.** Every title, outcome and summary on the
+  board page is escaped, and the page loads nothing from anywhere.
 - **No repeats.** A second resolve is an error unless it marks the note
   replaced. A second promote is an error and writes no second Relatum note.
 - **A strict server.** Bad JSON, oversized messages and batches get a JSON-RPC
@@ -254,6 +348,21 @@ Linux machine, release build:
 The first `spend` after the cache is lost still reads the whole ledger (183 ms
 at 100,000 entries). The full tables and limits are in
 [docs/perf/1.2.0.md](docs/perf/1.2.0.md). `examples/perf.rs` reruns them.
+
+Board reads are O(tasks): every task file is read once and the tree is one
+index. On a 12-CPU Apple Silicon laptop with 5,000 board tasks and 10,000
+notes ([docs/perf/1.3.0.md](docs/perf/1.3.0.md)):
+
+| Case | Median |
+|---|---:|
+| `board`, one project | 67 ms |
+| `plan`, tick one task (the page is rewritten too) | 246 ms |
+| `plan`, an outline of 200 tasks | 1.5 s |
+| `brief` | 253 ms |
+
+Most of a tick is rewriting the page, which reads every agent's notes for
+the open questions. An outline pays one synced file write per task, which is
+slow on macOS; it is still one call instead of 200.
 
 ## Build and test
 

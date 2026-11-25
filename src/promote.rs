@@ -69,7 +69,7 @@ fn relatum_kind(note: &Note) -> Result<&'static str, String> {
 /// symlink (a shared store, or `/tmp` on macOS). A `.swarmnotes` found by
 /// walking up that is a symlink or a file is refused, and the walk does not
 /// carry on to a parent store, the same rule as `.libellus`.
-fn find_relatum() -> Result<PathBuf, String> {
+pub(crate) fn find_relatum() -> Result<PathBuf, String> {
     if let Some(env) = std::env::var_os("SWARMNOTES_DIR") {
         if !env.is_empty() {
             let raw = env.to_string_lossy().to_string();

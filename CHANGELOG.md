@@ -1,5 +1,67 @@
 # Changelog
 
+## 1.3.0
+
+Notes and ledgers from 1.2.2 are read unchanged. New: batches, the shared
+board, its read-only page, `doctor`, and Claude Code sub-agent hooks.
+
+Breaking changes (there are no users yet):
+
+- `libellus_note` no longer requires `kind` and `summary` in its schema:
+  they are required only when `notes` is not given. Mixing `notes` with the
+  single-note fields is an error.
+- `libellus_resolve` likewise no longer requires `id` and `outcome` in its
+  schema: they are required only when `items` is not given.
+- A list argument with several bad items now names every bad item, prefixed
+  `nothing written:`, instead of the first one only.
+- `libellus hook --host claude` prints a different snippet: exec form
+  (`command` plus `args`), matcher `startup|resume|compact` (no longer
+  `clear`), the command `libellus hook-run session-start --agent NAME`
+  (which prints `hookSpecificOutput` JSON, not plain text), and a new
+  `SubagentStart` hook. Paste it again.
+- `check` reports every damaged note or ledger in one error instead of
+  stopping at the first, and now also fails on a damaged board.
+- The brief has a `## Board` section after `## Current state`, and its
+  `Next:` line can say "tick off a task with libellus_plan".
+- New tool group `board`, on by default. A project whose AGENTS.md line is
+  `libellus: tools core, ledger` does not get it.
+
+Added:
+
+- Batches. `libellus_note` takes `notes` (up to 50) and `libellus_resolve`
+  takes `items` (up to 50 of `{id, outcome, supersede?}`). The whole batch
+  is checked first; one bad item writes nothing, and the error names every
+  bad item. Notes take their `seq` numbers in one locked step. A write that
+  fails part way names what was written. On the CLI: `--notes '<json>'`,
+  `--notes-file PATH`, `--items`, `--items-file`. Batch items are checked
+  against a schema like top-level arguments (unknown keys are errors), and
+  the MCP schema lists each item's properties and `maxItems`.
+- The board, `.libellus/board/<id>.md`: one task tree shared by every agent
+  in the store. Statuses todo, doing, blocked, done, dropped. Depth at most
+  6. A parent closes by itself (`closed_by: children`) when its children are
+  all done or dropped with one done, up to the project; a closed project
+  moves to `board/archive/<project>/`. Dropping drops open descendants.
+  Reopening a child reopens parents closed by children. A task cannot be
+  done while a child is open.
+- `libellus_plan`: up to 100 `add`, `set` and `remove` ops, or a markdown
+  checkbox `outline` (optionally under `parent`), in one all-or-nothing call
+  under one board lock. The reply lists what changed and every cascade.
+- `libellus_board`: the board as checkbox markdown with counts, filtered by
+  `owner`, `project`, `open_only` (default true) and `include_archived`.
+- `.libellus/board.html`, rewritten after every board write, and
+  `libellus board --html [--out PATH]`: a self-contained, read-only page
+  (kanban, tree, progress per project, each agent's open questions,
+  archived projects; light and dark; no scripts; every value escaped).
+- `libellus doctor [--fix]` and `libellus_doctor` (core): diagnostics with a
+  fix for each failing check. Exit 1 when a check fails. `--fix` only clears
+  abandoned locks and temp files.
+- `libellus hook-run session-start --agent NAME` and
+  `libellus hook-run subagent-start` for Claude Code. A sub-agent is named
+  `<agent_type>-<last 8 of agent_id>` and gets its brief. Bad input exits 0
+  with a note on stderr, so a session never breaks.
+- `examples/perf.rs` times the board at 5,000 tasks; numbers in
+  `docs/perf/1.3.0.md`.
+
 ## 1.2.2
 
 Same store format as 1.2.1. Fixes from the fifth review.

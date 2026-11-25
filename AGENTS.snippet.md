@@ -9,7 +9,18 @@ writes a Relatum note. Libellus does not call a model.
   Keep the summary to one line. Read it back with `libellus_get`.
 - Close a question with `libellus_resolve` and a one-line outcome. A note that
   is already resolved stays as it is.
+- Batch: `libellus_note` takes `notes` (up to 50) and `libellus_resolve`
+  takes `items`. One call for several costs one turn.
 - Point at proof instead of copying it: `evidence: ["trammel:plan-3/step-2"]`.
+- The board is shared by every agent: the main agent plans a project with
+  `libellus_plan` (an `outline` makes a whole tree in one call) and sets
+  `owner` on the subtrees it hands out. Each agent ticks off its own tasks
+  with `libellus_plan` `set` ops, several per call. A parent closes by
+  itself when its children are done; a closed project is archived. Read it
+  with `libellus_board`; your own open tasks are in the brief. People read
+  `.libellus/board.html` and ask you for changes.
+- A sub-agent uses the Libellus agent name its prompt gives it (or the one
+  the SubagentStart hook gives it) and calls `libellus_brief` with it first.
 - Record spend per step with `libellus_spend` (numbers you report; Libellus only
   adds them). Each call appends a line. Read totals with `libellus_ledger`.
 - `libellus_ls` returns the newest page (`limit`, default 50, minimum 1).
@@ -35,3 +46,5 @@ Choose tool groups with a line in the `agent-tools` block of AGENTS.md, or with
 libellus: disable ledger
 ```
 ````
+
+Groups: `core` (always on), `ledger`, `board`.

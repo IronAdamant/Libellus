@@ -6,14 +6,20 @@
 
 use crate::json::Value;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Kind {
     Str,
     UInt,
     Bool,
     StrList,
+    /// One JSON object whose keys are these parameters.
+    Object(&'static [Param]),
+    /// An array of up to `max` JSON objects whose keys are these parameters.
+    /// This is how a tool takes a batch in one call.
+    Objects(&'static [Param], usize),
 }
 
+#[derive(Debug)]
 pub struct Param {
     pub name: &'static str,
     pub kind: Kind,
@@ -90,58 +96,133 @@ impl Args {
             .unwrap_or_default()
     }
 
-    fn get(&self, name: &str) -> Option<&Value> {
+    /// The items of an `Objects` argument, already checked against its fields.
+    pub fn objects(&self, name: &str) -> Option<&[Value]> {
+        self.get(name).and_then(Value::as_array)
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Value> {
         self.pairs.iter().find(|(k, _)| k == name).map(|(_, v)| v)
     }
 }
 
+/// A field of a nested object, with JSON `null` read as absent.
+pub fn field<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+    v.get(key).filter(|x| !matches!(x, Value::Null))
+}
+
+pub fn field_str<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
+    field(v, key).and_then(Value::as_str)
+}
+
+pub fn field_list(v: &Value, key: &str) -> Option<Vec<String>> {
+    field(v, key).and_then(Value::as_array).map(|a| {
+        a.iter()
+            .filter_map(Value::as_str)
+            .map(String::from)
+            .collect()
+    })
+}
+
+fn param_schema(p: &Param) -> Value {
+    let mut f = vec![(
+        "type",
+        Value::str(match p.kind {
+            Kind::Str => "string",
+            Kind::UInt => "integer",
+            Kind::Bool => "boolean",
+            Kind::StrList | Kind::Objects(..) => "array",
+            Kind::Object(_) => "object",
+        }),
+    )];
+    match p.kind {
+        Kind::StrList => {
+            f.push(("items", Value::obj(vec![("type", Value::str("string"))])));
+        }
+        Kind::UInt => {
+            let min = if p.name == "limit" { 1 } else { 0 };
+            f.push(("minimum", Value::int(min)));
+        }
+        Kind::Object(fields) => {
+            for (k, v) in object_schema(fields) {
+                f.push((k, v));
+            }
+        }
+        Kind::Objects(fields, max) => {
+            f.push(("items", Value::obj(object_schema(fields))));
+            f.push(("maxItems", Value::uint(max as u64)));
+        }
+        Kind::Str | Kind::Bool => {}
+    }
+    if !p.choices.is_empty() {
+        f.push((
+            "enum",
+            Value::Array(p.choices.iter().map(|c| Value::str(*c)).collect()),
+        ));
+    }
+    f.push(("description", Value::str(p.doc)));
+    Value::obj(f)
+}
+
+fn object_schema(params: &[Param]) -> Vec<(&'static str, Value)> {
+    let props: Vec<(String, Value)> = params
+        .iter()
+        .map(|p| (p.name.to_string(), param_schema(p)))
+        .collect();
+    let required: Vec<Value> = params
+        .iter()
+        .filter(|p| p.required)
+        .map(|p| Value::str(p.name))
+        .collect();
+    let mut s = vec![
+        ("type", Value::str("object")),
+        ("properties", Value::Object(props)),
+        ("additionalProperties", Value::Bool(false)),
+    ];
+    if !required.is_empty() {
+        s.push(("required", Value::Array(required)));
+    }
+    s
+}
+
+/// Check one nested object against `params`. `at` names it in errors
+/// (`notes[2]`).
+fn check_object(params: &[Param], v: &Value, at: &str) -> Result<(), String> {
+    let Value::Object(pairs) = v else {
+        return Err(format!("{at} must be an object, got {}", v.type_name()));
+    };
+    let unknown: Vec<&str> = pairs
+        .iter()
+        .map(|(k, _)| k.as_str())
+        .filter(|k| !params.iter().any(|p| p.name == *k))
+        .collect();
+    if !unknown.is_empty() {
+        let valid: Vec<&str> = params.iter().map(|p| p.name).collect();
+        return Err(format!(
+            "{at}: unknown key(s) {}. Valid: {}",
+            unknown.join(", "),
+            valid.join(", ")
+        ));
+    }
+    for p in params {
+        match pairs.iter().find(|(k, _)| k == p.name).map(|(_, v)| v) {
+            None | Some(Value::Null) if p.required => {
+                return Err(format!("{at}: missing {}", p.name));
+            }
+            None | Some(Value::Null) => {}
+            Some(v) => check_value(p, v).map_err(|e| format!("{at}.{e}"))?,
+        }
+    }
+    Ok(())
+}
+
 impl Tool {
     pub fn schema(&self) -> Value {
-        let props: Vec<(String, Value)> = self
-            .params
-            .iter()
-            .map(|p| {
-                let mut f = vec![(
-                    "type",
-                    Value::str(match p.kind {
-                        Kind::Str => "string",
-                        Kind::UInt => "integer",
-                        Kind::Bool => "boolean",
-                        Kind::StrList => "array",
-                    }),
-                )];
-                if p.kind == Kind::StrList {
-                    f.push(("items", Value::obj(vec![("type", Value::str("string"))])));
-                }
-                if p.kind == Kind::UInt {
-                    let min = if p.name == "limit" { 1 } else { 0 };
-                    f.push(("minimum", Value::int(min)));
-                }
-                if !p.choices.is_empty() {
-                    f.push((
-                        "enum",
-                        Value::Array(p.choices.iter().map(|c| Value::str(*c)).collect()),
-                    ));
-                }
-                f.push(("description", Value::str(p.doc)));
-                (p.name.to_string(), Value::obj(f))
-            })
-            .collect();
-        let required: Vec<Value> = self
-            .params
-            .iter()
-            .filter(|p| p.required)
-            .map(|p| Value::str(p.name))
-            .collect();
-        let mut s = vec![
-            ("type", Value::str("object")),
-            ("properties", Value::Object(props)),
-            ("additionalProperties", Value::Bool(false)),
-        ];
-        if !required.is_empty() {
-            s.push(("required", Value::Array(required)));
-        }
-        Value::obj(s)
+        Value::obj(object_schema(self.params))
     }
 
     /// Check `args` against the parameter table. Unknown fields, wrong types,
@@ -197,7 +278,7 @@ impl Tool {
 
 fn check_value(p: &Param, v: &Value) -> Result<(), String> {
     let bad = |want: &str| Err(format!("{} must be {want}, got {}", p.name, v.type_name()));
-    match (p.kind, v) {
+    match (&p.kind, v) {
         (Kind::Str, Value::String(s)) => {
             if s.len() > MAX_STRING {
                 return Err(format!("{} is longer than {MAX_STRING} bytes", p.name));
@@ -243,5 +324,35 @@ fn check_value(p: &Param, v: &Value) -> Result<(), String> {
             Ok(())
         }
         (Kind::StrList, _) => bad("an array of strings"),
+        (Kind::Object(fields), v) => check_object(fields, v, p.name),
+        (Kind::Objects(fields, max), Value::Array(items)) => {
+            if items.len() > *max {
+                return Err(format!(
+                    "{} has {} items; at most {max} fit in one call",
+                    p.name,
+                    items.len()
+                ));
+            }
+            // Every bad item is named, not just the first, so one retry fixes them all.
+            let bad: Vec<String> = items
+                .iter()
+                .enumerate()
+                .filter_map(|(i, item)| {
+                    check_object(fields, item, &format!("{}[{i}]", p.name)).err()
+                })
+                .collect();
+            if bad.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "nothing written: {} of {} {} are invalid. {}",
+                    bad.len(),
+                    items.len(),
+                    p.name,
+                    bad.join("; ")
+                ))
+            }
+        }
+        (Kind::Objects(..), _) => bad("an array of objects"),
     }
 }

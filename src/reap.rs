@@ -9,11 +9,19 @@ use std::path::Path;
 /// paths that were removed.
 pub fn reap_abandoned(root: &Path) -> Vec<String> {
     let mut removed = Vec::new();
-    reap_dir(root, &mut removed);
+    reap_dir(root, &mut removed, true);
     removed
 }
 
-fn reap_dir(dir: &Path, removed: &mut Vec<String>) {
+/// The stale locks and abandoned temp files `reap_abandoned` would remove.
+/// Nothing is changed.
+pub fn find_abandoned(root: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    reap_dir(root, &mut found, false);
+    found
+}
+
+fn reap_dir(dir: &Path, removed: &mut Vec<String>, remove: bool) {
     let Ok(rd) = fs::read_dir(dir) else {
         return;
     };
@@ -26,19 +34,23 @@ fn reap_dir(dir: &Path, removed: &mut Vec<String>) {
             continue;
         }
         if kind.is_dir() {
-            reap_dir(&path, removed);
+            reap_dir(&path, removed, remove);
             continue;
         }
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
         let gone = if name.starts_with('.') && name.ends_with(".lock") {
-            fsx::break_stale_lock(&path)
+            if remove {
+                fsx::break_stale_lock(&path)
+            } else {
+                fsx::lock_is_stale(&path)
+            }
         } else {
             name.starts_with('.')
                 && name.contains(".tmp-")
                 && temp_abandoned(&path)
-                && fs::remove_file(&path).is_ok()
+                && (!remove || fs::remove_file(&path).is_ok())
         };
         if gone {
             removed.push(path.display().to_string());

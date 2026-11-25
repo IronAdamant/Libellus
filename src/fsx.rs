@@ -90,7 +90,9 @@ pub fn make_private_dir(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn path_exists_nofollow(path: &Path) -> bool {
+/// True when something (a file, folder or symlink) is at `path`. A symlink
+/// is not followed.
+pub fn path_exists_nofollow(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
 
@@ -311,6 +313,35 @@ fn refuse_symlinks(base: &Path, full: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A slug made from free text (a summary or a title): lowercase letters,
+/// digits and single dashes, at most 48 bytes. `n` above 1 adds `-n`. Empty
+/// text gives `fallback`. A Windows device name gains `-<fallback>`.
+pub fn slug_from(text: &str, n: u32, fallback: &str) -> String {
+    let mut slug: String = text
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    slug.truncate(48);
+    let slug = slug.trim_matches('-').to_string();
+    let slug = if slug.is_empty() {
+        fallback.to_string()
+    } else if reserved_name(&slug) {
+        format!("{slug}-{fallback}")
+    } else {
+        slug
+    };
+    if n <= 1 {
+        slug
+    } else {
+        format!("{slug}-{n}")
+    }
 }
 
 pub fn clip(s: &str, max: usize) -> String {
