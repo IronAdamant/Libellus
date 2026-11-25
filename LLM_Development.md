@@ -2,22 +2,32 @@
 
 ## Project overview
 
-**Libellus** 1.1.0 is a std-only Rust binary (`libellus`, `libellus-mcp`): a private
-notepad and number ledger for each AI agent. It does not call an LLM. 1.0.0 is
-the tagged release. 1.1.0 is not tagged.
+**Libellus** 1.1.1 is a std-only Rust binary (`libellus`, `libellus-mcp`): a private
+notepad and number ledger for each AI agent. It does not call an LLM. 1.0.0 and
+1.1.0 are tagged releases.
 
 **Guidelines:** No third-party crates. `[dependencies]`, `[dev-dependencies]` and
 `[build-dependencies]` stay empty. No new TODO or FIXME markers in `src/`.
 
 ## Active context
 
-- **Version:** 1.1.0 in the tree, not tagged. 1.0.0 is the GitHub release.
+- **Version:** 1.1.1 in the tree. 1.0.0 and 1.1.0 are GitHub releases.
   The release workflow publishes archives on `v*`. Not on crates.io or npm.
 - **Built:** note, get, resolve, ls, brief, promote, spend, ledger; `libellus hook`;
   `LIBELLUS_TOOLS`, `LIBELLUS_DISABLE`, `LIBELLUS_AGENT`.
 - **Not in this tree:** npm packages, an MCP Registry entry.
 
 ## Session log
+
+---
+
+## 1.1.1: Windows release zip
+
+**Date:** 2026-11-25
+
+- Crate version is 1.1.1. No behaviour changes.
+- The Windows release archive is a real zip, and the release job checks the
+  PK signature and lists the entries before upload.
 
 ---
 
