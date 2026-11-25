@@ -5,7 +5,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::process::Command;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 fn cli(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     Command::new(CLI)
@@ -43,7 +43,7 @@ fn a_fifo_is_not_opened_and_a_symlink_ledger_is_refused() {
         .status()
         .unwrap()
         .success());
-    let started = Instant::now();
+    let started = std::time::Instant::now();
     let listed = cli(&dir, &["ls", "--agent", "main"]);
     assert!(
         started.elapsed() < Duration::from_secs(3),
@@ -69,7 +69,7 @@ fn a_fifo_is_not_opened_and_a_symlink_ledger_is_refused() {
         .status()
         .unwrap()
         .success());
-    let started = Instant::now();
+    let started = std::time::Instant::now();
     let spent = cli(
         &dir,
         &[
