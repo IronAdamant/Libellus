@@ -4,9 +4,13 @@ use common::*;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::process::Command;
-use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
+// The fifo brief and the file-size rollback use mkfifo and ulimit. Windows
+// has neither. The same write path runs on Windows; those two checks do not.
+#[cfg(unix)]
+use std::sync::mpsc;
+#[cfg(unix)]
+use std::thread;
 
 fn cli(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     Command::new(CLI)
