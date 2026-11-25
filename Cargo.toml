@@ -1,0 +1,25 @@
+# Project name. This is the rename point for the crate, the `libellus` CLI and
+# the `libellus-mcp` server binary. `publish` stays false so this crate is not
+# sent to crates.io.
+[package]
+name = "libellus"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+license = "MIT"
+publish = false
+description = "A private notepad and number ledger for each AI agent. std only."
+readme = "README.md"
+autobins = false
+
+[dependencies]
+
+[dev-dependencies]
+
+[[bin]]
+name = "libellus"
+path = "src/main.rs"
+
+[[bin]]
+name = "libellus-mcp"
+path = "src/main.rs"

@@ -1,0 +1,9 @@
+/target
+# Local store written by running the tool against a project
+.libellus/
+# OS and editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
