@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The brief said "1 ledger entries"; it now says "1 ledger entry".
+
 ## 1.2.1
 
 Same store format as 1.2.0. Fixes from the fourth review.

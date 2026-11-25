@@ -229,7 +229,7 @@ fn a_torn_ledger_line_is_ignored_on_read_and_blocks_spend() {
     assert!(brief.status.success(), "{body}");
     assert!(body.contains("partial line"), "{body}");
     assert!(
-        body.contains("\"entries\":1") || body.contains("(1 ledger entries)"),
+        body.contains("\"entries\":1") || body.contains("(1 ledger entry)"),
         "{body}"
     );
     let before = fs::read_to_string(&ledger).unwrap();

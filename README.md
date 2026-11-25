@@ -102,7 +102,7 @@ The brief is plain text, short enough to paste straight back in:
 - global-retry-middleware-...: Global retry middleware: breaks streaming uploads
 
 ## Costs
-- total: 12000 in, 3000 out tokens, 45000 micro-USD (1 ledger entries)
+- total: 12000 in, 3000 out tokens, 45000 micro-USD (1 ledger entry)
 - retry: 12000 in, 3000 out, 45000 micro-USD
 
 Next: resolve an open question with libellus_resolve; share a note with libellus_promote.

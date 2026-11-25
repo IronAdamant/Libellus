@@ -149,8 +149,9 @@ pub fn run(a: &Args) -> Result<Value, String> {
             ));
         }
     }
+    let entries = if entry_count == 1 { "entry" } else { "entries" };
     text.push_str(&format!(
-        "\n## Costs\n- total: {} in, {} out tokens, {} micro-USD ({entry_count} ledger entries)\n",
+        "\n## Costs\n- total: {} in, {} out tokens, {} micro-USD ({entry_count} ledger {entries})\n",
         totals.tokens_in, totals.tokens_out, totals.cost_micro_usd
     ));
     for (task, row) in tasks.iter().take(max) {

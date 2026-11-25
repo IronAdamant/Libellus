@@ -82,7 +82,7 @@ fn spend_does_not_append_when_the_total_would_overflow() {
         "{text}"
     );
     assert!(
-        text.contains("(1 ledger entries)") && body.contains("\"entries\":1"),
+        text.contains("(1 ledger entry)") && body.contains("\"entries\":1"),
         "brief and ledger must report the same count\nbrief: {text}\nledger: {body}"
     );
     let check = cli(&dir, &["check"]);
