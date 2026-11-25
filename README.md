@@ -195,6 +195,19 @@ cargo build --release --locked
 `examples/perf.rs` times the hot paths. The 1.0.0 numbers and the later run
 are in [docs/perf/](docs/perf/).
 
+## Performance, 1.2.0
+
+Measured on one 4 CPU Linux machine, release build, same box for 1.1.2 and
+1.2.0. The full tables and the limits are in
+[docs/perf/1.2.0.md](docs/perf/1.2.0.md).
+
+| Case | 1.1.2 | 1.2.0 | Cause |
+|---|---:|---:|---|
+| Warm spend, 100,000 entries, one task | 274.1 ms | 3.9 ms | `ledger.meta` cache. The cold read of that file is still 183.3 ms. |
+| Brief, 100,000 distinct tasks | 13.1 s | 227 ms | One-pass task grouping |
+| Ledger, 100,000 distinct tasks | 13.5 s | 336 ms | One-pass task grouping |
+| Brief text, 100 open questions, `--max_items 3` | 19,001 bytes | 927 bytes | `max_items` caps the sections |
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
