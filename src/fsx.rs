@@ -227,6 +227,9 @@ pub fn join_child(base: &Path, segments: &[&str]) -> Result<PathBuf, String> {
 /// deletes the file.
 pub struct Lock {
     path: PathBuf,
+    /// Held open so Windows reports a sharing violation instead of letting a
+    /// second creator slip through. Closed before the file is removed.
+    file: Option<fs::File>,
 }
 
 const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -237,16 +240,16 @@ impl Lock {
         let path = lock_path(subject)?;
         let start = std::time::Instant::now();
         loop {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
+            match open_lock(&path) {
                 Ok(mut file) => {
                     let _ = writeln!(file, "pid {}", std::process::id());
-                    return Ok(Lock { path });
+                    let _ = file.sync_all();
+                    return Ok(Lock {
+                        path,
+                        file: Some(file),
+                    });
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(e) if lock_contended(&e, &path) => {
                     if lock_is_stale(&path) {
                         let _ = fs::remove_file(&path);
                         continue;
@@ -267,8 +270,35 @@ impl Lock {
 
 impl Drop for Lock {
     fn drop(&mut self) {
+        // Unlink while the handle is still open. On Unix the name goes away
+        // immediately. On Windows the open allows delete sharing, so the name
+        // is released and a waiter can create a new lock.
         let _ = fs::remove_file(&self.path);
+        self.file.take();
     }
+}
+
+fn open_lock(path: &Path) -> std::io::Result<fs::File> {
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_SHARE_READ | FILE_SHARE_DELETE. Delete sharing lets Drop unlink
+        // the name while this handle is still open.
+        opts.share_mode(0x00000001 | 0x00000004);
+    }
+    opts.open(path)
+}
+
+/// Windows can return access-denied (os error 5) instead of already-exists
+/// when two creators race, or while the holder still has the file open.
+fn lock_contended(err: &std::io::Error, path: &Path) -> bool {
+    if err.kind() == std::io::ErrorKind::AlreadyExists {
+        return true;
+    }
+    (err.raw_os_error() == Some(5) || err.kind() == std::io::ErrorKind::PermissionDenied)
+        && path.exists()
 }
 
 fn lock_path(subject: &Path) -> Result<PathBuf, String> {
