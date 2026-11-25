@@ -1,48 +1,56 @@
 # Libellus
 
-## What it is
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Libellus is a private notepad and a number ledger for one AI agent. The notes
-and the numbers live in plain files that agent owns. After its context is
-compacted, one command returns a short brief: open questions, the latest
-state, recent decisions, replaced decisions, dead ends, and what the run
-has cost.
+Libellus is a private notepad and cost ledger for an AI agent, so it does not
+lose track of its work when its conversation is compacted.
 
-## Why it exists
+When a long session gets compacted (the earlier conversation squashed into a
+summary), an agent tends to forget the question it was still unsure about,
+the approach it already ruled out, the decision it made, and how much the run
+has cost so far. Libellus keeps those in plain files that the agent owns.
+After compaction, one command gives back a short brief to paste into the
+session.
 
-When an agent's context is squashed, it forgets the question it was still
-unsure about, the approach it already ruled out, the decision it made, and
-what the run has cost. That memory has to live outside the chat, in files the
-agent owns.
-
-Each agent has a private folder of short notes and a number list (the ledger).
-Notes point at proof (`tool:reference`) instead of copying it. Sharing with
-the swarm is a deliberate step into [Relatum](https://github.com/IronAdamant/Relatum),
-not the default.
+Each agent gets its own folder of short notes, plus a ledger of the tokens and
+cost it reports. Notes can point at proof elsewhere (`tool:reference`) rather
+than copying it. Sharing a note with other agents is a deliberate step into
+[Relatum](https://github.com/IronAdamant/Relatum), not the default.
 
 What it deliberately does not do:
 
-- It does not call a model. The agent reports tokens and cost. Libellus only
-  adds them up. Cost is a whole number of millionths of a US dollar.
-- It is not Relatum (shared swarm notes), Stele-Context (code memory),
-  Wikifier (per-file change notes), Trammel (plans), CoordinationHub (locks),
-  or Adsertio (verification).
-- "Private" means separate per agent, not secret. The same computer user can
-  read the files.
+- **Call a model.** The agent reports its tokens and cost; Libellus only adds
+  them up. Cost is a whole number of millionths of a US dollar (micro-USD).
+- **Keep secrets.** "Private" means separate per agent. Anyone with access to
+  the same computer account can read the files.
+- **Do other tools' jobs.** Shared swarm notes are
+  [Relatum](https://github.com/IronAdamant/Relatum), code memory is
+  Stele-Context, per-file change notes are Wikifier, plans are
+  [Trammel](https://github.com/IronAdamant/Trammel), live locks are
+  CoordinationHub, and checking claims is
+  [Adsertio](https://github.com/IronAdamant/Adsertio).
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-
-Libellus is one small Rust binary (standard library only, no Cargo crates)
-with a CLI and a stdio MCP server over the same files. No service, no account.
+Libellus is one small Rust program with no dependencies beyond the standard
+library. It works as a command line tool (`libellus`) and as an MCP server for
+AI agents (`libellus-mcp`, or `libellus mcp`). There is no service and no
+account.
 
 ## Install
 
-Download a release archive for Linux x64, macOS x64, macOS arm64, or Windows
-x64 from the [GitHub releases](https://github.com/IronAdamant/Libellus/releases).
-Each archive contains `libellus` and `libellus-mcp`. Check `SHA256SUMS`
-before you run a binary. Libellus is not published to crates.io or npm.
+Download the archive for your platform from the
+[latest release](https://github.com/IronAdamant/Libellus/releases/latest):
 
-Or build it from this repository (Rust 1.83 or newer):
+| Platform | Archive |
+|---|---|
+| Linux x64 | `libellus-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS Intel | `libellus-<version>-x86_64-apple-darwin.tar.gz` |
+| macOS Apple Silicon | `libellus-<version>-aarch64-apple-darwin.tar.gz` |
+| Windows x64 | `libellus-<version>-x86_64-pc-windows-msvc.zip` |
+
+Each archive holds `libellus` and `libellus-mcp`. Check the download against
+`SHA256SUMS` before you run it. Libellus is not on crates.io or npm.
+
+Or build it yourself (Rust 1.83 or newer):
 
 ```sh
 git clone https://github.com/IronAdamant/Libellus
@@ -50,54 +58,98 @@ cd Libellus
 cargo build --release --locked
 ```
 
-That produces `target/release/libellus` and `target/release/libellus-mcp`
-(`libellus mcp` is the same server). `--version` prints the version.
-A flag may be `--name value` or `--name=value`. A value that itself starts
-with `--` is written `--name -- --value`.
+The binaries land in `target/release/`.
 
-## Usage
+## A quick tour
 
 ```sh
 cd your-project
-libellus init
+libellus init                                  # creates .libellus/ here
+
+# Note a question, then answer it later.
 libellus note --agent main --kind question --summary "Does retry apply to POST?"
 libellus resolve --agent main --id does-retry-apply-to-post --outcome "No, GET only."
 libellus get --agent main --id does-retry-apply-to-post
+
+# Record what a step cost, and see the totals.
 libellus spend --agent main --task retry --tokens_in 100 --tokens_out 20 --cost_micro_usd 1000
 libellus ledger --agent main
+
+# The text to put back into the session after compaction.
 libellus brief --agent main
-libellus archive --agent main
 ```
 
-`archive` starts a fresh ledger, so the brief after it shows no cost. Run it
-when a ledger has grown large, not as a routine step.
+Set `LIBELLUS_AGENT=main` and you can leave out `--agent`. (`libellus ledger`
+is the exception: with no `--agent` it totals every agent.) Flags can be
+written `--name value` or `--name=value`. A value that itself starts with `--`
+is written `--name -- --value`.
 
-The store is the nearest `.libellus/` walking up from the working directory,
-or `$LIBELLUS_DIR`.
+The brief is plain text, short enough to paste straight back in:
+
+```text
+# Libellus brief for main
+
+## Current state
+- retry-wrapper-...: Retry wrapper is in src/http.rs; GET is done, POST next
+
+## Open questions (1)
+- does-retry-apply-to-put: Does retry apply to PUT?
+
+## Recent decisions
+- retry-only-idempotent-methods: Retry only idempotent methods
+
+## Dead ends
+- global-retry-middleware-...: Global retry middleware: breaks streaming uploads
+
+## Costs
+- total: 12000 in, 3000 out tokens, 45000 micro-USD (1 ledger entries)
+- retry: 12000 in, 3000 out, 45000 micro-USD
+
+Next: resolve an open question with libellus_resolve; share a note with libellus_promote.
+```
+
+Each section is capped (5 items by default, `--max_items` up to 50), newest
+first.
+
+### Notes
+
+Every note has a **kind**:
+
+| Kind | Use it for |
+|---|---|
+| `context` | where things stand right now (the newest one is the brief's "Current state") |
+| `decision` | a choice you made, and why |
+| `question` | something still unsure; starts open until you resolve it |
+| `dead-end` | an approach you tried and ruled out |
+| `finding` | something you learned |
+
+A note is `open` or `resolved`. Questions start open; other kinds start
+resolved. To mark a decision as replaced, resolve it with `--supersede`, or
+with an outcome that starts `SUPERSEDED:` or `REVERSED:`. Evidence is a
+pointer such as `trammel:plan-3/step-2`, not a copy of the proof.
+
+### Where the files live
+
+The store is the nearest `.libellus/` folder, walking up from the current
+directory, or the folder named by `$LIBELLUS_DIR`.
 
 ```
 .libellus/
   agents/main/notes/does-retry-apply-to-post.md
   agents/main/seq                 the note counter
-  agents/main/ledger.jsonl
+  agents/main/ledger.jsonl        one line per spend
   agents/main/ledger.meta         totals cache, rebuilt from the ledger
-  agents/main/archive/            ledgers moved aside by archive
+  agents/main/archive/            old ledgers moved aside by archive
   agents/sub-2/...
 ```
 
-A note has a `kind` (decision, dead-end, question, finding, context) and a
-`status` (open or resolved). Questions start open. Evidence is a pointer such
-as `trammel:plan-3/step-2`, not a copy of the proof. The ledger stores the
-tokens and cost the agent reports. The brief is the text to put back into
-context. The format is in [SPEC.md](SPEC.md).
+The ledger only grows. When it gets large, `libellus archive --agent main`
+moves it into `archive/` and starts a fresh one; the old file is kept but no
+longer counted. The file format is in [SPEC.md](SPEC.md).
 
-`LIBELLUS_AGENT` fills in `--agent` when a command needs an agent and the flag
-is left out. `libellus ledger` does not use it: with no `--agent` it sums
-every agent in the store.
+## Using it from an agent (MCP)
 
-## MCP tools
-
-Claude Code (`.mcp.json`) or Cursor (`.cursor/mcp.json`):
+For Claude Code (`.mcp.json`) or Cursor (`.cursor/mcp.json`):
 
 ```json
 {
@@ -111,44 +163,40 @@ Claude Code (`.mcp.json`) or Cursor (`.cursor/mcp.json`):
 ```
 
 Set `LIBELLUS_DIR` only when the host does not start the server inside the
-project. The same tools are CLI commands without the `libellus_` prefix.
+project.
 
 | Tool | Group | Does |
 |---|---|---|
 | `libellus_note` | core | Write a note. Never overwrites an existing one. |
-| `libellus_get` | core | Read one note by id, including its body. |
-| `libellus_resolve` | core | Mark a note resolved and append a one-line outcome. `supersede`, or an outcome starting `SUPERSEDED:` or `REVERSED:`, marks it replaced. |
-| `libellus_ls` | core | List your notes. `before_id` is the stable page cursor. `limit` is at least 1. |
-| `libellus_brief` | core | The compaction payload. Capped, newest first, and it still returns notes when the ledger cannot be read. |
-| `libellus_check` | core | Read every note and ledger. Removes stale locks and leftover temp files. Fails on damage. |
-| `libellus_promote` | core | Write the note into Relatum and record that id. |
-| `libellus_spend` | ledger | Record tokens and cost for a step. Refuses before the ledger would pass 32 MiB. |
-| `libellus_ledger` | ledger | Totals, optionally by task, step, or every agent. |
-| `libellus_archive` | ledger | Move the ledger into `archive/` and start a fresh one. The old file is kept. |
+| `libellus_get` | core | Read one note, including its body. |
+| `libellus_resolve` | core | Mark a note resolved and add a one-line outcome. `supersede` marks it replaced. |
+| `libellus_ls` | core | List your notes. Page with `before_id`. |
+| `libellus_brief` | core | The compaction brief. Still returns the notes if the ledger cannot be read. |
+| `libellus_check` | core | Read every note and ledger, and fail on damage. Clears locks and temp files left by a writer that is gone. |
+| `libellus_promote` | core | Copy a note into Relatum and record its Relatum id. |
+| `libellus_spend` | ledger | Record tokens and cost for a step. Refuses once the ledger would pass 32 MiB. |
+| `libellus_ledger` | ledger | Totals, by task, by step, or across every agent. |
+| `libellus_archive` | ledger | Move the ledger into `archive/` and start a fresh one. |
 
-`libellus check` reads every note and ledger and fails on any damage.
-`libellus hook --agent NAME [--host cursor|claude|generic]` prints a snippet
-that runs `libellus brief`. Paste it into the host's hook file. Run it at
-session start and after compaction.
+Each tool is also a CLI command without the `libellus_` prefix.
 
-The generic snippet is the command itself. The claude snippet is a
-SessionStart hook, including the compact matcher, which runs after compaction.
-That command's plain text is added to the session. The cursor snippet is a
-sessionStart hook: the command prints `{"additional_context": "..."}` and
-Cursor adds that text when a chat starts. Cursor's preCompact hook cannot put
-text back into the model, so after compaction in Cursor, run the brief again
-and put the text into the session yourself.
+### Run the brief automatically
 
-```sh
-libellus hook --agent main --host generic
-```
+`libellus hook --agent NAME --host claude|cursor|generic` prints a snippet to
+paste into the host's hook settings, so the brief runs at the start of a
+session and after compaction:
 
-## Tool groups
+| Host | What the snippet does |
+|---|---|
+| `claude` | A Claude Code `SessionStart` hook for `.claude/settings.json`. Its matcher includes `compact`, so it also runs after compaction, and the brief is added to the session. |
+| `cursor` | A Cursor `sessionStart` hook for `.cursor/hooks.json`. Cursor has no hook that can put text back after compaction, so after compacting, run the brief again (or call `libellus_brief`) and paste it in. |
+| `generic` | Just the command, `libellus brief --agent NAME`, for any other host. |
 
-`core` is always on. `ledger` (`libellus_spend`, `libellus_ledger`, `libellus_archive`) can be
-switched off. The server rereads the choice on every request.
+### Tool groups
 
-Add one line to the `agent-tools` block in the project's AGENTS.md:
+The `core` tools are always on. The `ledger` tools (`libellus_spend`,
+`libellus_ledger`, `libellus_archive`) can be switched off with one line in
+the `agent-tools` block of the project's AGENTS.md:
 
 ````markdown
 ```agent-tools
@@ -156,41 +204,52 @@ libellus: disable ledger
 ```
 ````
 
-`libellus: tools core, ledger` lists what you want instead. See
+Or list what you want: `libellus: tools core, ledger`. The environment
+variables `LIBELLUS_TOOLS` and `LIBELLUS_DISABLE` override that line. The
+server rereads the choice on every request. A typo, or trying to disable
+`core`, falls back to the core tools and says why. See
 [AGENTS.snippet.md](AGENTS.snippet.md) for text to paste into a project.
 
-`LIBELLUS_TOOLS` and `LIBELLUS_DISABLE`, when set to a non-empty value,
-replace that line. Names are groups, comma-separated, and case is ignored.
-`core` cannot be disabled. A typo, or an attempt to disable `core`, falls
-back to the core tools only and says why in `initialize` and in `tools/list`.
+## Built to fail loudly
 
-## Hardening
+When something is wrong, Libellus says so instead of guessing. Each of these
+is covered by tests in `tests/`:
 
-These failure modes are covered by tests in `tests/`:
+- **Damage is an error.** A damaged note or ledger is reported with the file
+  name. It is never read as empty, never reset, and a damaged ledger is never
+  appended to.
+- **No writing outside the store.** Ids and agent names must be simple
+  lowercase names. Paths that leave the store, and symlinks (including a
+  symlinked `.libellus`, `notes/` or `archive/`), are refused. Promote applies
+  the same checks to the Relatum path.
+- **Safe writes.** Every write lands whole through a temp file. A new note
+  never overwrites another, and resolve and promote replace only that note's
+  own file.
+- **Safe with several writers.** Resolve, promote, spend, archive and the note
+  counter each take a lock. If a writer is killed, exactly one later writer
+  takes over its lock, so two notes never share a number and a resolve is
+  never lost.
+- **No repeats.** A second resolve is an error unless it marks the note
+  replaced. A second promote is an error and writes no second Relatum note.
+- **A strict server.** Bad JSON, oversized messages and batches get a JSON-RPC
+  error and the server keeps running. Unknown methods and misspelt arguments
+  are errors. A tool that panics is caught and reported.
 
-- Deeply nested JSON (cap 64), invalid UTF-8, oversized lines and batches get
-  a JSON-RPC error. The server keeps running.
-- Unknown methods are errors. A failed tool call sets `isError`. A panicking
-  tool is caught and reported as an error.
-- Unknown or misspelled arguments are errors, never ignored.
-- A damaged note or ledger is an error naming the file. It is never read as
-  empty, never reset, and a damaged ledger is never appended to.
-- Ids and agent names are slugs. Paths that leave the store, and symlinks,
-  are refused, including a symlinked `.libellus`, `notes/` or `archive/`.
-  The same checks apply to a Relatum path on promote.
-- Resolve, promote, spend, archive and the note counter each hold a lock.
-  A lock left by a killed writer is taken over by exactly one writer, so two
-  notes never share a `seq` and a concurrent resolve is never lost.
-- A `ledger.meta` that is not a regular file (a fifo, for example) is not
-  read, so it cannot block `spend`.
-- Writes land whole through a temp file that is removed on failure. A new
-  note is created with a hard link, so it cannot overwrite another. Resolve
-  and promote update an existing note only by replacing that file.
-- A second resolve is an error and does not append again, unless it marks the
-  note replaced. A second promote is an error and does not write a second
-  Relatum note.
-- A mistake in the `agent-tools` line, or in `LIBELLUS_TOOLS` /
-  `LIBELLUS_DISABLE`, falls back to the core tools and says why.
+## Performance
+
+1.2.0 caches the ledger totals and groups tasks in one pass. On one 4-CPU
+Linux machine, release build:
+
+| Case | 1.1.2 | 1.2.0 |
+|---|---:|---:|
+| `spend`, 100,000 ledger entries, one task | 274 ms | 3.9 ms |
+| `brief`, 100,000 different tasks | 13.1 s | 227 ms |
+| `ledger`, 100,000 different tasks | 13.5 s | 336 ms |
+| Brief text, 100 open questions, `--max_items 3` | 19,001 bytes | 927 bytes |
+
+The first `spend` after the cache is lost still reads the whole ledger (183 ms
+at 100,000 entries). The full tables and limits are in
+[docs/perf/1.2.0.md](docs/perf/1.2.0.md). `examples/perf.rs` reruns them.
 
 ## Build and test
 
@@ -201,24 +260,9 @@ cargo test --locked
 cargo build --release --locked
 ```
 
-`Cargo.toml` has no dependencies. `tests/zero_deps.rs` checks that, and
-`Cargo.lock` holds one package.
-
-`examples/perf.rs` times the hot paths. The 1.0.0 numbers and the later run
-are in [docs/perf/](docs/perf/).
-
-## Performance, 1.2.0
-
-Measured on one 4 CPU Linux machine, release build, same box for 1.1.2 and
-1.2.0. The full tables and the limits are in
-[docs/perf/1.2.0.md](docs/perf/1.2.0.md).
-
-| Case | 1.1.2 | 1.2.0 | Cause |
-|---|---:|---:|---|
-| Warm spend, 100,000 entries, one task | 274.1 ms | 3.9 ms | `ledger.meta` cache. The cold read of that file is still 183.3 ms. |
-| Brief, 100,000 distinct tasks | 13.1 s | 227 ms | One-pass task grouping |
-| Ledger, 100,000 distinct tasks | 13.5 s | 336 ms | One-pass task grouping |
-| Brief text, 100 open questions, `--max_items 3` | 19,001 bytes | 927 bytes | `max_items` caps the sections |
+`Cargo.toml` has no dependencies; `tests/zero_deps.rs` checks that, and
+`Cargo.lock` holds one package. Pushing a tag named `v*` builds the release
+archives and `SHA256SUMS`.
 
 ## Licence
 
