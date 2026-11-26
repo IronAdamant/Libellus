@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.4.2
+
+Same store format as 1.4.1. A board page fix, and a screenshot in the README.
 
 - The board page's header counts what its kanban shows. It counted the
   projects as tasks too, so a page could say "6 todo, 3 doing" above
