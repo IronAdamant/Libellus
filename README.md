@@ -21,6 +21,13 @@ The one shared part is the **board**: a tree of tasks that a main agent and
 its sub-agents keep together, so the plan survives compaction and finished
 work tidies itself away. People read it as a page; agents change it.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/board-dark.png">
+  <img alt="The Libellus board page: two projects with progress bars and a kanban of todo, doing, blocked and done tasks, owned by a main agent and two sub-agents" src="docs/images/board-light.png">
+</picture>
+
+*The board page for a demo project: a main agent and two sub-agents (`sub-1`, `sub-2`) sharing one plan.*
+
 What it deliberately does not do:
 
 - **Call a model.** The agent reports its tokens and cost; Libellus only adds
