@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- The board page's header counts what its kanban shows. It counted the
+  projects as tasks too, so a page could say "6 todo, 3 doing" above
+  columns headed "todo (5)" and "doing (2)". Projects are now counted on
+  their own: "2 open projects. 8 open tasks: 5 todo, 2 doing, 1 blocked.
+  ..." The brief's `board:` line and the JSON `counts` are unchanged.
+
 ## 1.4.1
 
 Windows: a write no longer fails with `cannot replace <path>: Access is

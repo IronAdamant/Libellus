@@ -1110,3 +1110,30 @@ fn the_claude_hooks_are_valid_json_and_run_without_a_shell() {
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stdout.is_empty());
 }
+
+#[test]
+fn the_page_header_counts_what_the_kanban_shows() {
+    // Projects have their own section; the kanban holds the tasks under them.
+    // The header counts the same tasks, and the projects apart, so a reader
+    // never sees "6 todo" above a "todo (5)" column.
+    let dir = project("v130-html-counts");
+    init(&dir);
+    outline(
+        &dir,
+        "- [~] Relaunch\n  - [~] Copy\n    - [x] Home page\n    - [~] About page\n  - [ ] Build\n    - [ ] Retry\n    - [!] Payment\n- [ ] Docs\n  - [ ] Readme\n",
+    );
+    let page = fs::read_to_string(dir.join(".libellus/board.html")).unwrap();
+    assert!(
+        page.contains("2 open projects. 6 open tasks: 3 todo, 2 doing, 1 blocked. 1 done, 0 dropped. 0 archived projects."),
+        "header: {}",
+        page.lines().find(|l| l.contains("open tasks")).unwrap_or("")
+    );
+    for col in [
+        "<h3>todo (3)</h3>",
+        "<h3>doing (2)</h3>",
+        "<h3>blocked (1)</h3>",
+        "<h3>done (1)</h3>",
+    ] {
+        assert!(page.contains(col), "missing {col}");
+    }
+}

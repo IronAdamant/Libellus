@@ -133,16 +133,35 @@ pub fn render(
     h.push_str(STYLE);
     h.push_str("</style>\n</head>\n<body>\n<h1>Libellus board</h1>\n");
     h.push_str("<p class=\"banner\"><strong>Read-only.</strong> Agents keep this board; this page cannot change it. To change anything, ask your agent, for example: <code>review task &lt;id&gt;</code> or <code>drop task &lt;id&gt;</code>.</p>\n");
-    let c = live.counts();
+    // Count what the kanban below shows: tasks under a project. Projects are
+    // counted apart, so the header and the column headings always agree.
+    let (mut todo, mut doing, mut blocked, mut done, mut open_projects) = (0, 0, 0, 0, 0);
+    for t in live.tasks.values() {
+        if t.parent.is_empty() {
+            if board::is_open(&t.status) {
+                open_projects += 1;
+            }
+            continue;
+        }
+        match t.status.as_str() {
+            "todo" => todo += 1,
+            "doing" => doing += 1,
+            "blocked" => blocked += 1,
+            "done" => done += 1,
+            _ => {}
+        }
+    }
+    let dropped = live
+        .tasks
+        .values()
+        .filter(|t| t.status == "dropped")
+        .count();
     h.push_str(&format!(
-        "<p class=\"muted\">{} open tasks: {} todo, {} doing, {} blocked. {} done, {} dropped. {} archived projects.</p>\n",
-        c.todo + c.doing + c.blocked,
-        c.todo,
-        c.doing,
-        c.blocked,
-        c.done,
-        c.dropped,
-        archived.len()
+        "<p class=\"muted\">{open_projects} open {}. {} open tasks: {todo} todo, {doing} doing, {blocked} blocked. {done} done, {dropped} dropped. {} archived {}.</p>\n",
+        if open_projects == 1 { "project" } else { "projects" },
+        todo + doing + blocked,
+        archived.len(),
+        if archived.len() == 1 { "project" } else { "projects" },
     ));
     for w in &live.warnings {
         h.push_str(&format!("<p class=\"banner\">Warning: {}</p>\n", esc(w)));
